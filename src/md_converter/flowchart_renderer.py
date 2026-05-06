@@ -87,23 +87,36 @@ class MermaidRenderer(FlowchartRenderer):
             output_path = Path(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # 构建命令
+            # 构建命令，使用neutral主题（黑白风格）
             cmd = [
                 self.mmdc_path,
                 '-i', temp_input,
                 '-o', str(output_path),
-                '-t', self.theme,
+                '-t', 'neutral',
                 '-w', str(self.width),
                 '-H', str(self.height),
                 '-b', 'transparent'
             ]
 
-            # 执行命令
+            # 执行命令，配置Chrome路径
+            env = os.environ.copy()
+            chrome_paths = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",  # macOS
+                "/usr/bin/google-chrome",  # Linux
+                "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",  # Windows
+            ]
+            if 'PUPPETEER_EXECUTABLE_PATH' not in env:
+                for chrome_path in chrome_paths:
+                    if os.path.exists(chrome_path):
+                        env['PUPPETEER_EXECUTABLE_PATH'] = chrome_path
+                        break
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
+                env=env
             )
 
             # 清理临时文件

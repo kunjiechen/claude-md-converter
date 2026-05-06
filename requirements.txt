@@ -1,0 +1,21 @@
+# Markdown转Word/PDF转换器依赖
+
+# Markdown解析
+markdown-it-py>=2.0.0
+
+# Word文档生成
+python-docx>=0.8.11
+
+# PDF生成（推荐weasyprint，样式保真度高）
+weasyprint>=59.0
+
+# 图片处理
+Pillow>=9.0.0
+
+# 命令行工具
+click>=8.0.0
+
+# 开发依赖（可选）
+pytest>=7.0.0
+black>=22.0.0
+flake8>=4.0.0

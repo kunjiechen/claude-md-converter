@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /Users/chenkunjie/Downloads/SBPAI/Proj/claude-md-converter/.claude/skills)",
+      "Bash(pip install *)",
+      "Bash(python -c \"from markdown_it import MarkdownIt; from markdown_it.extensions.tables import tables_plugin; print\\('tables plugin available'\\)\")",
+      "Bash(python -c \"from markdown_it import MarkdownIt; md = MarkdownIt\\(\\); print\\(dir\\(md\\)\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(find /Users/chenkunjie -name \"G-C110*\" -type f 2>/dev/null | head -20)",
+      "Read(//Users/chenkunjie/**)"
+    ],
+    "additionalDirectories": [
+      "/Users/chenkunjie/Downloads/SBPAI/Proj/claude-md-converter/.claude"
+    ]
+  }
+}

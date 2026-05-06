@@ -206,11 +206,6 @@ graph TD
     A[开始] --> B[处理步骤1]
     B --> C[处理步骤2]
     C --> D[结束]
-
-    style A fill:#ffffff,stroke:#000000,stroke-width:2px,rx:25,ry:25
-    style B fill:#ffffff,stroke:#000000,stroke-width:2px
-    style C fill:#ffffff,stroke:#000000,stroke-width:2px
-    style D fill:#ffffff,stroke:#000000,stroke-width:2px,rx:25,ry:25
 ```
 
 ### 10.2 带判断的流程图
@@ -222,12 +217,6 @@ graph TD
     B -->|条件不成立| D[执行操作B]
     C --> E[结束]
     D --> E
-
-    style A fill:#ffffff,stroke:#000000,stroke-width:2px,rx:25,ry:25
-    style B fill:#ffffff,stroke:#000000,stroke-width:2px,rx:5,ry:5
-    style C fill:#ffffff,stroke:#000000,stroke-width:2px
-    style D fill:#ffffff,stroke:#000000,stroke-width:2px
-    style E fill:#ffffff,stroke:#000000,stroke-width:2px,rx:25,ry:25
 ```
 
 ### 10.3 复杂流程图
@@ -242,15 +231,6 @@ graph TD
     Process2 --> Output[输出结果]
     Process3 --> Output
     Output --> End[结束]
-
-    style Start fill:#ffffff,stroke:#000000,stroke-width:2px,rx:25,ry:25
-    style Input fill:#ffffff,stroke:#000000,stroke-width:2px
-    style Process1 fill:#ffffff,stroke:#000000,stroke-width:2px
-    style Decision fill:#ffffff,stroke:#000000,stroke-width:2px,rx:5,ry:5
-    style Process2 fill:#ffffff,stroke:#000000,stroke-width:2px
-    style Process3 fill:#ffffff,stroke:#000000,stroke-width:2px
-    style Output fill:#ffffff,stroke:#000000,stroke-width:2px
-    style End fill:#ffffff,stroke:#000000,stroke-width:2px,rx:25,ry:25
 ```
 
 ### 10.4 时序图

@@ -16,6 +16,12 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
+try:
+    from .flowchart_painter import FlowchartPythonRenderer
+    HAS_PAINTER = True
+except ImportError:
+    HAS_PAINTER = False
+
 
 class FlowchartRenderer(ABC):
     """流程图渲染器基类"""
@@ -331,26 +337,27 @@ class FlowchartProcessor:
                 - mermaid_enabled: 是否启用Mermaid
                 - plantuml_enabled: 是否启用PlantUML
                 - use_kroki: 是否使用Kroki在线API（无需本地依赖）
+                - use_python_painter: 是否使用Python绘图（推荐，完全符合G-C110规范）
                 - output_dir: 图片输出目录
                 - temp_dir: 临时目录
         """
         self.mermaid_enabled = options.get('mermaid_enabled', True)
         self.plantuml_enabled = options.get('plantuml_enabled', True)
         self.use_kroki = options.get('use_kroki', False)
+        self.use_python_painter = options.get('use_python_painter', True)  # 默认使用Python绘图
         self.output_dir = options.get('output_dir')
         self.temp_dir = options.get('temp_dir')
 
         # 初始化渲染器
-        if self.use_kroki:
-            # 使用Kroki在线API
-            self.kroki_renderer = KrokiRenderer(**options)
-            self.mermaid_renderer = None
-            self.plantuml_renderer = None
-        else:
-            # 使用本地渲染器
-            self.kroki_renderer = None
-            self.mermaid_renderer = MermaidRenderer(**options) if self.mermaid_enabled else None
-            self.plantuml_renderer = PlantUMLRenderer(**options) if self.plantuml_enabled else None
+        # Python绘图渲染器（推荐，完全符合G-C110规范）
+        self.python_renderer = FlowchartPythonRenderer(**options) if self.use_python_painter and HAS_PAINTER else None
+
+        # Kroki在线API渲染器
+        self.kroki_renderer = KrokiRenderer(**options) if self.use_kroki else None
+
+        # 本地渲染器（作为备选方案）
+        self.mermaid_renderer = MermaidRenderer(**options) if self.mermaid_enabled else None
+        self.plantuml_renderer = PlantUMLRenderer(**options) if self.plantuml_enabled else None
 
     def detect_flowchart(self, code: str) -> Optional[str]:
         """
@@ -390,7 +397,15 @@ class FlowchartProcessor:
         Returns:
             渲染是否成功
         """
-        # 优先使用Kroki
+        # 优先使用Python绘图（推荐，完全符合G-C110规范）
+        # 只支持graph/flowchart类型的流程图
+        if self.use_python_painter and self.python_renderer and chart_type == 'mermaid':
+            result = self.python_renderer.render(code, output_path)
+            if result:
+                return True
+            # Python绘图失败（可能是sequenceDiagram等非流程图类型），继续尝试其他渲染器
+
+        # 使用Kroki
         if self.use_kroki and self.kroki_renderer:
             return self.kroki_renderer.render(code, output_path, chart_type)
 
@@ -413,6 +428,10 @@ class FlowchartProcessor:
         Returns:
             渲染器是否可用
         """
+        # 检查Python绘图渲染器
+        if self.use_python_painter and self.python_renderer and chart_type == 'mermaid':
+            return self.python_renderer.is_available()
+
         # 检查Kroki
         if self.use_kroki and self.kroki_renderer:
             return self.kroki_renderer.is_available()
@@ -432,6 +451,10 @@ class FlowchartProcessor:
             可用渲染器类型列表
         """
         available = []
+
+        # 检查Python绘图渲染器
+        if self.use_python_painter and self.python_renderer and self.python_renderer.is_available():
+            available.append('python_painter')
 
         # 检查Kroki
         if self.use_kroki and self.kroki_renderer and self.kroki_renderer.is_available():

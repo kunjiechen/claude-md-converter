@@ -6,9 +6,15 @@
 import os
 import subprocess
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 from pathlib import Path
 from abc import ABC, abstractmethod
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 
 class FlowchartRenderer(ABC):
@@ -225,6 +231,81 @@ class PlantUMLRenderer(FlowchartRenderer):
             return False
 
 
+class KrokiRenderer(FlowchartRenderer):
+    """Kroki在线API渲染器（无需本地依赖）"""
+
+    def __init__(self, **options):
+        """
+        初始化Kroki渲染器
+
+        Args:
+            **options: 渲染选项
+                - kroki_url: Kroki API地址（默认：https://kroki.io）
+                - format: 输出格式（png, svg）
+        """
+        self.kroki_url = options.get('kroki_url', 'https://kroki.io')
+        self.format = options.get('format', 'png')
+
+    def render(self, code: str, output_path: str, chart_type: str = 'mermaid', **options) -> bool:
+        """
+        使用Kroki API渲染流程图
+
+        Args:
+            code: 流程图代码
+            output_path: 输出图片路径
+            chart_type: 流程图类型（mermaid, plantuml）
+
+        Returns:
+            渲染是否成功
+        """
+        if not HAS_REQUESTS:
+            print("需要安装requests库：pip install requests")
+            return False
+
+        try:
+            # 构建API URL
+            url = f"{self.kroki_url}/{chart_type}/{self.format}"
+
+            # 发送请求
+            response = requests.post(
+                url,
+                data=code.encode('utf-8'),
+                headers={'Content-Type': 'text/plain'},
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                # 保存图片
+                output_path = Path(output_path)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(response.content)
+                return True
+            else:
+                print(f"Kroki API错误: {response.status_code}")
+                return False
+
+        except requests.exceptions.Timeout:
+            print("Kroki API请求超时")
+            return False
+        except requests.exceptions.RequestException as e:
+            print(f"Kroki API请求失败: {e}")
+            return False
+        except Exception as e:
+            print(f"Kroki渲染异常: {e}")
+            return False
+
+    def is_available(self) -> bool:
+        """检查Kroki API是否可用"""
+        if not HAS_REQUESTS:
+            return False
+
+        try:
+            response = requests.get(self.kroki_url, timeout=5)
+            return response.status_code == 200
+        except:
+            return False
+
+
 class FlowchartProcessor:
     """流程图处理器"""
 
@@ -236,17 +317,27 @@ class FlowchartProcessor:
             **options: 处理选项
                 - mermaid_enabled: 是否启用Mermaid
                 - plantuml_enabled: 是否启用PlantUML
+                - use_kroki: 是否使用Kroki在线API（无需本地依赖）
                 - output_dir: 图片输出目录
                 - temp_dir: 临时目录
         """
         self.mermaid_enabled = options.get('mermaid_enabled', True)
         self.plantuml_enabled = options.get('plantuml_enabled', True)
+        self.use_kroki = options.get('use_kroki', False)
         self.output_dir = options.get('output_dir')
         self.temp_dir = options.get('temp_dir')
 
         # 初始化渲染器
-        self.mermaid_renderer = MermaidRenderer(**options) if self.mermaid_enabled else None
-        self.plantuml_renderer = PlantUMLRenderer(**options) if self.plantuml_enabled else None
+        if self.use_kroki:
+            # 使用Kroki在线API
+            self.kroki_renderer = KrokiRenderer(**options)
+            self.mermaid_renderer = None
+            self.plantuml_renderer = None
+        else:
+            # 使用本地渲染器
+            self.kroki_renderer = None
+            self.mermaid_renderer = MermaidRenderer(**options) if self.mermaid_enabled else None
+            self.plantuml_renderer = PlantUMLRenderer(**options) if self.plantuml_enabled else None
 
     def detect_flowchart(self, code: str) -> Optional[str]:
         """
@@ -286,6 +377,11 @@ class FlowchartProcessor:
         Returns:
             渲染是否成功
         """
+        # 优先使用Kroki
+        if self.use_kroki and self.kroki_renderer:
+            return self.kroki_renderer.render(code, output_path, chart_type)
+
+        # 使用本地渲染器
         if chart_type == 'mermaid' and self.mermaid_renderer:
             return self.mermaid_renderer.render(code, output_path)
         elif chart_type == 'plantuml' and self.plantuml_renderer:
@@ -304,6 +400,11 @@ class FlowchartProcessor:
         Returns:
             渲染器是否可用
         """
+        # 检查Kroki
+        if self.use_kroki and self.kroki_renderer:
+            return self.kroki_renderer.is_available()
+
+        # 检查本地渲染器
         if chart_type == 'mermaid' and self.mermaid_renderer:
             return self.mermaid_renderer.is_available()
         elif chart_type == 'plantuml' and self.plantuml_renderer:
@@ -319,6 +420,11 @@ class FlowchartProcessor:
         """
         available = []
 
+        # 检查Kroki
+        if self.use_kroki and self.kroki_renderer and self.kroki_renderer.is_available():
+            available.append('kroki')
+
+        # 检查本地渲染器
         if self.mermaid_enabled and self.mermaid_renderer and self.mermaid_renderer.is_available():
             available.append('mermaid')
 

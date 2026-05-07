@@ -303,7 +303,7 @@ md-converter ./docs --format=pdf --output=./output
 - 代码块：使用Courier New等宽字体
 - 图片插入：支持本地图片，预留远程图片接口
 
-### 第四阶段：PDF转换实现 ✅ 已完成
+### 第四阶段：PDF转换实现 ✅ 已完成（暂时关闭）
 - [x] 方案选择和实现
 - [x] 样式保真
 - [ ] 模板支持（设计预留，后续实现）
@@ -317,25 +317,61 @@ md-converter ./docs --format=pdf --output=./output
 - 中文字体支持：自动检测系统字体
 - 预留模板接口：支持自定义CSS模板（weasyprint）或样式配置（reportlab）
 
+**当前状态：PDF功能默认关闭**
+- **关闭原因**：等待Word功能调试完成后再开启
+- **启用方式**：使用 `--enable-pdf` 参数启用
+- **示例**：`md-converter input.md --format pdf --enable-pdf`
+- **配置位置**：cli.py 中的 `--enable-pdf` 参数
+
 ### 第四阶段补充：流程图/图表支持 ✅ 已完成
 - [x] Mermaid语法解析
 - [x] PlantUML语法解析
 - [x] 图表渲染为图片
 - [x] 插入Word/PDF文档
 - [x] 遵循公司规范：G-C110 流程图编制规范_A0（需要安装mmdc）
+- [x] Python纯绘图渲染器（Pillow）- 无需Chrome依赖
+- [x] For循环流程图支持 - 完全遵循G-C110规范
 
 **实现细节：**
 - 创建FlowchartProcessor类，支持流程图检测和渲染
 - 创建MermaidRenderer类，支持Mermaid语法渲染（需要mmdc）
 - 创建PlantUMLRenderer类，支持PlantUML语法渲染（需要plantuml）
+- 创建FlowchartPythonRenderer类，使用Pillow纯Python渲染（无需Chrome）
 - 更新WordConverter，自动检测并渲染流程图
 - 更新PDFConverter，自动检测并渲染流程图
 - 流程图渲染失败时，降级为代码块显示
 - 添加14个流程图测试用例，全部通过
 
+**For循环实现细节：**
+- 实现For循环自动检测（_detect_for_loop方法）
+- 实现For循环专用布局（_layout_for_loop方法）
+- 实现For循环专用走线（_draw_for_loop_edge方法）
+
+**Switch Case实现细节：**
+- 实现Switch Case自动检测（_detect_switch_case方法）
+- 实现Switch Case专用布局（_layout_switch_case方法）
+- 实现Switch Case专用走线（_draw_switch_case_edge方法）
+- 布局规范：
+  - 开始→初始化→判断→循环体→增量→结束
+  - 初始化在判断正上方，循环体在判断正下方，增量在判断右侧
+  - left_margin = 判断节点宽度（为左侧出线留出空间）
+- 走线规范：
+  - 开始→初始化：垂直线
+  - 初始化→判断：垂直线
+  - 判断→循环体（是）：垂直线
+  - 循环体→增量：右侧出横线，向上折到增量节点下方边框中点
+  - 增量→判断：上方出线，上竖后左横到判断框正上方的线上
+  - 判断→结束（否）：左侧出线，先左横半个框长度，再下竖，再右横到结束框上方，最后下连接到结束框
+- 遵循G-C110规范：
+  - 不允许斜线，只使用水平线和垂直线
+  - 判断框入口在上方顶点
+  - 判断成立出口在下方顶点
+  - 判断不成立出口在左中方顶点（For循环专用）
+
 **环境配置：**
 - 安装mermaid-cli：`npm install -g @mermaid-js/mermaid-cli`
 - 配置Chrome路径：`export PUPPETEER_EXECUTABLE_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`
+- Python渲染器依赖：Pillow（已包含在requirements.txt）
 
 ### 第五阶段：批量处理和日志 ✅ 已完成
 - [x] 批量处理实现

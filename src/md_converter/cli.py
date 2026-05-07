@@ -62,6 +62,13 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        '--enable-pdf',
+        action='store_true',
+        default=False,
+        help='启用PDF转换功能（默认关闭）'
+    )
+
+    parser.add_argument(
         '--page-size',
         default='A4',
         help='PDF页面大小 (默认: A4)'
@@ -102,6 +109,12 @@ def main(args: Optional[List[str]] = None):
         args: 命令行参数列表
     """
     parsed_args = parse_args(args)
+
+    # 检查PDF功能是否启用
+    if parsed_args.format == 'pdf' and not parsed_args.enable_pdf:
+        print("错误：PDF功能当前已关闭，请使用 --enable-pdf 参数启用", file=sys.stderr)
+        print("示例：md-converter input.md --format pdf --enable-pdf", file=sys.stderr)
+        sys.exit(1)
 
     # 准备选项
     options = {

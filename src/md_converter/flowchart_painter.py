@@ -5,7 +5,7 @@ Python绘图流程图渲染器
 
 import re
 import math
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
 
 try:
@@ -315,18 +315,10 @@ class FlowchartPainter:
 
     def _calculate_layout(self, graph: FlowchartGraph):
         """计算节点布局"""
-        # 按拓扑排序确定节点顺序
-        ordered_nodes = self._topological_sort(graph)
-
-        # 计算每个节点的层级
-        levels = self._calculate_levels(graph, ordered_nodes)
-
-        # 按层级分组
-        level_groups = {}
-        for node_id, level in levels.items():
-            if level not in level_groups:
-                level_groups[level] = []
-            level_groups[level].append(node_id)
+        # 先尝试检测是否为for循环模式
+        is_for_loop, loop_nodes = self._detect_for_loop(graph)
+        # 检测是否为switch case模式
+        is_switch_case, switch_nodes = self._detect_switch_case(graph)
 
         # 计算节点大小
         for node in graph.nodes.values():
@@ -336,14 +328,162 @@ class FlowchartPainter:
         max_width = max(node.width for node in graph.nodes.values())
         max_height = max(node.height for node in graph.nodes.values())
         for node in graph.nodes.values():
-            node.width = max_width
-            node.height = max_height
+            if node.node_type == 'start_end':
+                # 开始/结束框：竖向椭圆（高度大于宽度）
+                node.width = max_width * 0.8
+                node.height = max_height * 1.2
+            else:
+                node.width = max_width
+                node.height = max_height
 
-        # 计算节点位置
-        if graph.direction == 'TD':
-            self._layout_top_down(graph, level_groups)
+        if is_for_loop and graph.direction == 'TD':
+            # 使用for循环专用布局
+            self._layout_for_loop(graph, loop_nodes)
+        elif is_switch_case and graph.direction == 'TD':
+            # 使用switch case专用布局
+            self._layout_switch_case(graph, switch_nodes)
         else:
-            self._layout_left_right(graph, level_groups)
+            # 按拓扑排序确定节点顺序
+            ordered_nodes = self._topological_sort(graph)
+
+            # 计算每个节点的层级
+            levels = self._calculate_levels(graph, ordered_nodes)
+
+            # 按层级分组
+            level_groups = {}
+            for node_id, level in levels.items():
+                if level not in level_groups:
+                    level_groups[level] = []
+                level_groups[level].append(node_id)
+
+            # 计算节点位置
+            if graph.direction == 'TD':
+                self._layout_top_down(graph, level_groups)
+            else:
+                self._layout_left_right(graph, level_groups)
+
+    def _detect_for_loop(self, graph: FlowchartGraph) -> Tuple[bool, Dict[str, str]]:
+        """检测是否为for循环模式"""
+        # 找是否有一个判断节点有两条入边：一条从初始化/处理来，一条从增量来
+        decision_nodes = [n for n in graph.nodes.values() if n.node_type == 'decision']
+
+        for decision_node in decision_nodes:
+            # 找到指向判断节点的边
+            incoming_edges = [e for e in graph.edges if e.to_node == decision_node.id]
+            if len(incoming_edges) >= 2:
+                # 找到判断节点的"是"分支
+                yes_node = None
+                for e in graph.edges:
+                    if e.from_node == decision_node.id and e.label in ['是', '条件成立', 'yes', 'Y']:
+                        yes_node = e.to_node
+                        break
+
+                if yes_node:
+                    # 找到yes_node指向的节点（应该是增量操作）
+                    inc_node = None
+                    for e in graph.edges:
+                        if e.from_node == yes_node:
+                            inc_node = e.to_node
+                            break
+
+                    if inc_node:
+                        # 检查inc_node是否指向decision_node（形成闭环）
+                        inc_to_decision = any(e.from_node == inc_node and e.to_node == decision_node.id for e in graph.edges)
+
+                        if inc_to_decision:
+                            # 找到开始和结束节点
+                            start_nodes = [n.id for n in graph.nodes.values() if n.node_type == 'start_end']
+                            init_node = None
+
+                            # 找到指向decision_node的另一个节点（初始化节点）
+                            init_node = None
+                            for e in incoming_edges:
+                                if e.from_node != inc_node:
+                                    init_node = e.from_node
+                                    break
+
+                            # 找到"否"分支指向的结束节点
+                            end_node = None
+                            for e in graph.edges:
+                                if e.from_node == decision_node.id and e.label not in ['是', '条件成立', 'yes', 'Y']:
+                                    end_node = e.to_node
+                                    break
+
+                            return True, {
+                                'start': start_nodes[0] if len(start_nodes) > 0 else None,
+                                'init': init_node,
+                                'decision': decision_node.id,
+                                'body': yes_node,
+                                'inc': inc_node,
+                                'end': end_node
+                            }
+
+        return False, {}
+
+    def _detect_switch_case(self, graph: FlowchartGraph) -> Tuple[bool, Dict[str, Any]]:
+        """检测是否为switch case模式
+
+        Switch case特征：
+        1. 只有一个判断框
+        2. 判断框有多个出边（多个case分支）
+        3. 所有分支最终汇合到同一个结束节点
+
+        Returns:
+            (is_switch_case, switch_nodes)
+            switch_nodes包含：start, init, decision, branches, end
+        """
+        decision_nodes = [n for n in graph.nodes.values() if n.node_type == 'decision']
+
+        # 只有一个判断框
+        if len(decision_nodes) != 1:
+            return False, {}
+
+        decision_node = decision_nodes[0]
+
+        # 找到判断框的所有出边
+        outgoing_edges = [e for e in graph.edges if e.from_node == decision_node.id]
+
+        # 判断框应该有多个出边（至少3个：2个case + 1个default）
+        if len(outgoing_edges) < 3:
+            return False, {}
+
+        # 找到所有分支节点
+        branch_nodes = []
+        for edge in outgoing_edges:
+            branch_nodes.append(edge.to_node)
+
+        # 检查所有分支是否都指向同一个结束节点
+        end_nodes = set()
+        for branch_id in branch_nodes:
+            for edge in graph.edges:
+                if edge.from_node == branch_id:
+                    end_nodes.add(edge.to_node)
+
+        # 所有分支应该指向同一个结束节点
+        if len(end_nodes) != 1:
+            return False, {}
+
+        end_node = list(end_nodes)[0]
+
+        # 找到开始节点
+        start_nodes = [n.id for n in graph.nodes.values() if n.node_type == 'start_end']
+        if not start_nodes:
+            return False, {}
+
+        # 找到初始化节点（指向判断框的节点）
+        incoming_edges = [e for e in graph.edges if e.to_node == decision_node.id]
+        if not incoming_edges:
+            return False, {}
+
+        init_node = incoming_edges[0].from_node
+
+        return True, {
+            'start': start_nodes[0],
+            'init': init_node,
+            'decision': decision_node.id,
+            'branches': branch_nodes,
+            'end': end_node
+        }
 
     def _topological_sort(self, graph: FlowchartGraph) -> List[str]:
         """拓扑排序"""
@@ -429,6 +569,108 @@ class FlowchartPainter:
                             to_node.y = graph.nodes[e.to_node].y
                             break
 
+        # 处理switch case：多个判断框串联的情况
+        # 找到所有判断框，检查是否有多个判断框串联
+        decision_nodes = [n for n in graph.nodes.values() if n.node_type == 'decision']
+        if len(decision_nodes) > 1:
+            # 检查是否有判断框的"否"分支指向另一个判断框
+            for decision in decision_nodes:
+                for edge in graph.edges:
+                    if edge.from_node == decision.id and edge.label not in ['是', '条件成立', 'yes', 'Y']:
+                        target_node = graph.nodes[edge.to_node]
+                        if target_node.node_type == 'decision':
+                            # 将目标判断框移到当前判断框右边
+                            target_node.x = decision.x + decision.width + self.horizontal_spacing
+                            # 保持在同一水平线上
+                            target_node.y = decision.y
+
+    def _layout_for_loop(self, graph: FlowchartGraph, loop_nodes: Dict[str, str]):
+        """For循环专用布局"""
+        y = 0
+
+        # 计算左侧需要的空间（半个框长度用于左侧出线）
+        decision_node = graph.nodes[loop_nodes['decision']]
+        left_margin = decision_node.width
+
+        # 开始节点
+        if loop_nodes.get('start'):
+            start_node = graph.nodes[loop_nodes['start']]
+            start_node.x = left_margin
+            start_node.y = y + start_node.height / 2
+            y += start_node.height + self.vertical_spacing
+
+        # 初始化节点
+        if loop_nodes.get('init'):
+            init_node = graph.nodes[loop_nodes['init']]
+            init_node.x = left_margin
+            init_node.y = y + init_node.height / 2
+            y += init_node.height + self.vertical_spacing
+
+        # 判断节点
+        decision_node.x = left_margin
+        decision_node.y = y + decision_node.height / 2
+
+        # 循环体节点（在判断节点正下方）
+        body_node = graph.nodes[loop_nodes['body']]
+        body_node.x = left_margin
+        body_node.y = decision_node.y + decision_node.height + self.vertical_spacing
+
+        # 增量节点（在判断节点右侧）
+        inc_node = graph.nodes[loop_nodes['inc']]
+        inc_node.x = left_margin + decision_node.width / 2 + inc_node.width / 2 + self.horizontal_spacing * 1.2
+        inc_node.y = decision_node.y
+
+        # 结束节点（在循环体节点下方）
+        if loop_nodes.get('end'):
+            end_node = graph.nodes[loop_nodes['end']]
+            end_node.x = left_margin
+            end_node.y = body_node.y + body_node.height + self.vertical_spacing
+
+    def _layout_switch_case(self, graph: FlowchartGraph, switch_nodes: Dict[str, Any]):
+        """Switch case专用布局
+
+        布局要求：
+        1. 开始→初始化→判断框（垂直排列，居中）
+        2. 所有分支执行框并行排布（同一水平线）
+        3. 结束框与开始框竖向对齐（同一垂直线）
+        """
+        y = 0
+        decision_node = graph.nodes[switch_nodes['decision']]
+        branch_nodes = switch_nodes['branches']
+        branch_count = len(branch_nodes)
+
+        # 计算总宽度：分支数 * 节点宽度 + (分支数-1) * 间距
+        total_width = branch_count * self.node_min_width + (branch_count - 1) * self.horizontal_spacing
+        start_x = -total_width / 2
+
+        # 开始节点（居中）
+        start_node = graph.nodes[switch_nodes['start']]
+        start_node.x = 0
+        start_node.y = y + start_node.height / 2
+        y += start_node.height + self.vertical_spacing
+
+        # 初始化节点（居中）
+        init_node = graph.nodes[switch_nodes['init']]
+        init_node.x = 0
+        init_node.y = y + init_node.height / 2
+        y += init_node.height + self.vertical_spacing
+
+        # 判断节点（居中）
+        decision_node.x = 0
+        decision_node.y = y + decision_node.height / 2
+
+        # 分支执行框（并行排布，同一水平线）
+        branch_y = decision_node.y + decision_node.height + self.vertical_spacing * 2
+        for i, branch_id in enumerate(branch_nodes):
+            branch_node = graph.nodes[branch_id]
+            branch_node.x = start_x + i * (self.node_min_width + self.horizontal_spacing) + self.node_min_width / 2
+            branch_node.y = branch_y + branch_node.height / 2
+
+        # 结束节点（与开始框竖向对齐，即x=0）
+        end_node = graph.nodes[switch_nodes['end']]
+        end_node.x = 0
+        end_node.y = branch_y + self.node_min_height + self.vertical_spacing * 2
+
     def _layout_left_right(self, graph: FlowchartGraph, level_groups: Dict[int, List[str]]):
         """从左到右布局"""
         x = 0
@@ -473,10 +715,9 @@ class FlowchartPainter:
 
         # 根据节点类型绘制形状
         if node.node_type == 'start_end':
-            # 端点符：圆角矩形（较大的圆角）
-            radius = min(w, h) / 3
-            draw.rounded_rectangle([left, top, right, bottom], radius=radius,
-                                   fill=self.fill_color, outline=self.line_color, width=2)
+            # 端点符：椭圆（更明显）
+            draw.ellipse([left, top, right, bottom],
+                        fill=self.fill_color, outline=self.line_color, width=2)
         elif node.node_type == 'decision':
             # 判断：菱形
             points = [
@@ -530,10 +771,25 @@ class FlowchartPainter:
         draw.text((text_x, text_y), node.label, fill=self.text_color, font=self.font)
 
     def _draw_edge(self, draw: ImageDraw.Draw, graph: FlowchartGraph, edge: FlowchartEdge, padding: int):
-        """绘制边"""
+        """绘制边 - 不允许斜线，只允许水平线和垂直线"""
         scale = getattr(self, 'scale', 1.0)
         from_node = graph.nodes[edge.from_node]
         to_node = graph.nodes[edge.to_node]
+
+        # 先检测是否为for循环
+        is_for_loop, loop_nodes = self._detect_for_loop(graph)
+        # 检测是否为switch case
+        is_switch_case, switch_nodes = self._detect_switch_case(graph)
+
+        if is_for_loop:
+            # For循环专用走线
+            self._draw_for_loop_edge(draw, graph, edge, padding, loop_nodes)
+            return
+
+        if is_switch_case:
+            # Switch case专用走线
+            self._draw_switch_case_edge(draw, graph, edge, padding, switch_nodes)
+            return
 
         # 判断框出线规范
         if from_node.node_type == 'decision' and graph.direction == 'TD':
@@ -550,33 +806,42 @@ class FlowchartPainter:
 
                 # 保存这条线的中间位置，用于"条件不成立"线路的连接
                 self._decision_yes_mid_y = (start_y + end_y) / 2
-            else:
-                # 条件不成立：右中方，水平出线到目标节点上方
-                start_x = (from_node.x + from_node.width / 2 + padding) * scale
-                start_y = (from_node.y + padding) * scale
-                mid_x = (to_node.x + padding) * scale
-                mid_y = start_y
 
-                # 绘制水平线到目标节点上方
-                draw.line([(start_x, start_y), (mid_x, mid_y)], fill=self.line_color, width=2)
-
-                # 从目标节点上方垂直向下到目标节点
-                top_y = (to_node.y - to_node.height / 2 + padding) * scale
-                draw.line([(mid_x, mid_y), (mid_x, top_y)], fill=self.line_color, width=2)
-
-            # 绘制标签
-            if edge.label:
-                if edge.label in ['是', '条件成立', 'yes', 'Y']:
+                # 绘制标签
+                if edge.label:
                     label_x = start_x + 10 * scale
                     label_y = (start_y + end_y) / 2
-                else:
-                    label_x = (start_x + mid_x) / 2
+                    bbox = self.font.getbbox(edge.label)
+                    text_width = bbox[2] - bbox[0]
+                    draw.text((label_x - text_width / 2, label_y), edge.label, fill=self.text_color, font=self.font)
+            else:
+                # 条件不成立：右中方，先水平向右，再垂直向下，再水平向左
+                # 第一步：从判断框右中方水平向右
+                start_x = (from_node.x + from_node.width / 2 + padding) * scale
+                start_y = (from_node.y + padding) * scale
+
+                # 水平到目标节点的x位置
+                mid_x1 = (to_node.x + padding) * scale
+                mid_y1 = start_y
+
+                # 绘制水平线
+                draw.line([(start_x, start_y), (mid_x1, mid_y1)], fill=self.line_color, width=2)
+
+                # 第二步：垂直向下到目标节点上方
+                end_y = (to_node.y - to_node.height / 2 + padding) * scale
+                draw.line([(mid_x1, mid_y1), (mid_x1, end_y)], fill=self.line_color, width=2)
+                self._draw_arrow(draw, mid_x1, mid_y1, mid_x1, end_y)
+
+                # 绘制标签
+                if edge.label:
+                    label_x = (start_x + mid_x1) / 2
                     label_y = start_y - 15 * scale
-                bbox = self.font.getbbox(edge.label)
-                text_width = bbox[2] - bbox[0]
-                draw.text((label_x - text_width / 2, label_y), edge.label, fill=self.text_color, font=self.font)
+                    bbox = self.font.getbbox(edge.label)
+                    text_width = bbox[2] - bbox[0]
+                    draw.text((label_x - text_width / 2, label_y), edge.label, fill=self.text_color, font=self.font)
         else:
-            # 普通边：直线连接
+            # 普通边：不允许斜线，使用折线连接
+            # 策略：竖线减半，然后左折到结束框上方的垂直线上
             if graph.direction == 'TD':
                 start_x = (from_node.x + padding) * scale
                 start_y = (from_node.y + from_node.height / 2 + padding) * scale
@@ -588,17 +853,29 @@ class FlowchartPainter:
                 end_x = (to_node.x - to_node.width / 2 + padding) * scale
                 end_y = (to_node.y + padding) * scale
 
-            # 绘制线段
-            draw.line([(start_x, start_y), (end_x, end_y)], fill=self.line_color, width=2)
-            self._draw_arrow(draw, start_x, start_y, end_x, end_y)
+            # 策略：
+            # 1. 如果起点和终点x相同：直接垂直线
+            # 2. 否则：竖线减半，然后水平到结束框的垂直线上
+            if abs(start_x - end_x) < 1:
+                # 同一垂直线，直接连接
+                draw.line([(start_x, start_y), (end_x, end_y)], fill=self.line_color, width=2)
+                self._draw_arrow(draw, start_x, start_y, end_x, end_y)
+            else:
+                # 第一步：竖线长度减半（走到起点和终点中间的位置）
+                mid_y = (start_y + end_y) / 2
+                draw.line([(start_x, start_y), (start_x, mid_y)], fill=self.line_color, width=2)
+
+                # 第二步：水平移动到结束框的垂直线上（end_x）
+                draw.line([(start_x, mid_y), (end_x, mid_y)], fill=self.line_color, width=2)
+                self._draw_arrow(draw, start_x, mid_y, end_x, mid_y)
 
             # 绘制标签
             if edge.label:
                 mid_x = (start_x + end_x) / 2
-                mid_y = (start_y + end_y) / 2
+                mid_y_label = (start_y + end_y) / 2
                 bbox = self.font.getbbox(edge.label)
                 text_width = bbox[2] - bbox[0]
-                draw.text((mid_x - text_width / 2, mid_y - 10 * scale), edge.label, fill=self.text_color, font=self.font)
+                draw.text((mid_x - text_width / 2, mid_y_label - 10 * scale), edge.label, fill=self.text_color, font=self.font)
 
     def _draw_arrow(self, draw: ImageDraw.Draw, x1: float, y1: float, x2: float, y2: float):
         """绘制箭头"""
@@ -613,6 +890,239 @@ class FlowchartPainter:
 
         draw.polygon([(x2, y2), (arrow_x1, arrow_y1), (arrow_x2, arrow_y2)],
                       fill=self.line_color, outline=self.line_color)
+
+    def _draw_for_loop_edge(self, draw: ImageDraw.Draw, graph: FlowchartGraph, edge: FlowchartEdge, padding: int, loop_nodes: Dict[str, str]):
+        """绘制For循环专用边"""
+        scale = getattr(self, 'scale', 1.0)
+        from_node = graph.nodes[edge.from_node]
+        to_node = graph.nodes[edge.to_node]
+
+        # 判断是否为循环体到增量节点的边
+        if edge.from_node == loop_nodes.get('body') and edge.to_node == loop_nodes.get('inc'):
+            # 循环处理框 -> 循环变量操作框：右侧出横线，然后上折
+            body_node = graph.nodes[loop_nodes['body']]
+            inc_node = graph.nodes[loop_nodes['inc']]
+
+            start_x = (body_node.x + body_node.width / 2 + padding) * scale
+            start_y = (body_node.y + padding) * scale
+
+            mid_x = (inc_node.x + padding) * scale
+            mid_y = start_y
+
+            # 向右横线
+            draw.line([(start_x, start_y), (mid_x, mid_y)], fill=self.line_color, width=2)
+
+            # 向上到增量节点下方边框中点
+            end_x = (inc_node.x + padding) * scale
+            end_y = (inc_node.y + inc_node.height / 2 + padding) * scale
+            draw.line([(mid_x, mid_y), (mid_x, end_y - 5 * scale)], fill=self.line_color, width=2)
+
+            # 箭头指向增量节点下方边框中点
+            self._draw_arrow(draw, mid_x, mid_y, mid_x, end_y)
+            return
+
+        # 判断是否为增量操作返回判断节点的边
+        if edge.from_node == loop_nodes.get('inc') and edge.to_node == loop_nodes.get('decision'):
+            # 循环变量操作框 -> 判断框：上方出线，先上竖，再左折到判断框正上方的线上
+            inc_node = graph.nodes[loop_nodes['inc']]
+            decision_node = graph.nodes[loop_nodes['decision']]
+            init_node = graph.nodes[loop_nodes['init']]
+
+            # 从增量节点上方出线
+            start_x = (inc_node.x + padding) * scale
+            start_y = (inc_node.y - inc_node.height / 2 + padding) * scale
+
+            # 上竖到判断框上方一定距离
+            up_y = (decision_node.y - decision_node.height / 2 - self.vertical_spacing * 0.5 + padding) * scale
+            draw.line([(start_x, start_y), (start_x, up_y)], fill=self.line_color, width=2)
+
+            # 左折到判断框正上方（连接到初始化节点到判断框的垂直线上）
+            init_x = (init_node.x + padding) * scale
+            draw.line([(start_x, up_y), (init_x, up_y)], fill=self.line_color, width=2)
+
+            # 箭头指向左边（指向初始化节点到判断框的垂直线）
+            self._draw_arrow(draw, start_x, up_y, init_x, up_y)
+            return
+
+        # 判断是否为判断节点到循环体的边（是分支）
+        if edge.from_node == loop_nodes.get('decision') and edge.to_node == loop_nodes.get('body'):
+            # 判断 -> 循环体：垂直向下
+            decision_node = graph.nodes[loop_nodes['decision']]
+            body_node = graph.nodes[loop_nodes['body']]
+
+            start_x = (decision_node.x + padding) * scale
+            start_y = (decision_node.y + decision_node.height / 2 + padding) * scale
+            end_x = (body_node.x + padding) * scale
+            end_y = (body_node.y - body_node.height / 2 + padding) * scale
+
+            draw.line([(start_x, start_y), (end_x, end_y)], fill=self.line_color, width=2)
+            self._draw_arrow(draw, start_x, start_y, end_x, end_y)
+
+            # 绘制标签
+            if edge.label:
+                label_x = start_x + 10 * scale
+                label_y = (start_y + end_y) / 2
+                bbox = self.font.getbbox(edge.label)
+                text_width = bbox[2] - bbox[0]
+                draw.text((label_x - text_width / 2, label_y), edge.label, fill=self.text_color, font=self.font)
+            return
+
+        # 判断是否为判断节点到结束节点的边（否分支）
+        if edge.from_node == loop_nodes.get('decision') and edge.to_node == loop_nodes.get('end'):
+            # 判断 -> 结束：左侧出线（左顶点），先左横半个框长度，再下竖，再右横到结束框上方，最后下连接到结束框
+            decision_node = graph.nodes[loop_nodes['decision']]
+            end_node = graph.nodes[loop_nodes['end']]
+            body_node = graph.nodes[loop_nodes['body']]
+
+            # 从判断框左顶点出线
+            start_x = (decision_node.x - decision_node.width / 2 + padding) * scale
+            start_y = (decision_node.y + padding) * scale
+
+            # 先向左横半个框长度（确保不超出画布左边界）
+            mid_x1 = max(5, start_x - decision_node.width / 2 * scale)
+            draw.line([(start_x, start_y), (mid_x1, start_y)], fill=self.line_color, width=2)
+
+            # 向下竖到结束框和处理数据框的中点
+            body_bottom_y = (body_node.y + body_node.height / 2 + padding) * scale
+            end_top_y = (end_node.y - end_node.height / 2 + padding) * scale
+            mid_y1 = (body_bottom_y + end_top_y) / 2
+            draw.line([(mid_x1, start_y), (mid_x1, mid_y1)], fill=self.line_color, width=2)
+
+            # 向右横到结束节点正上方
+            end_x = (end_node.x + padding) * scale
+            draw.line([(mid_x1, mid_y1), (end_x, mid_y1)], fill=self.line_color, width=2)
+
+            # 向下连接到结束节点上方边框中点
+            draw.line([(end_x, mid_y1), (end_x, end_top_y)], fill=self.line_color, width=2)
+
+            # 箭头指向结束节点上方边框中点
+            self._draw_arrow(draw, end_x, mid_y1, end_x, end_top_y)
+
+            # 绘制标签
+            if edge.label:
+                label_x = (start_x + mid_x1) / 2
+                label_y = start_y - 15 * scale
+                bbox = self.font.getbbox(edge.label)
+                text_width = bbox[2] - bbox[0]
+                draw.text((label_x - text_width / 2, label_y), edge.label, fill=self.text_color, font=self.font)
+            return
+
+        # 其他边：直接连接（开始->初始化，初始化->判断）
+        if graph.direction == 'TD':
+            start_x = (from_node.x + padding) * scale
+            start_y = (from_node.y + from_node.height / 2 + padding) * scale
+            end_x = (to_node.x + padding) * scale
+            end_y = (to_node.y - to_node.height / 2 + padding) * scale
+        else:
+            start_x = (from_node.x + from_node.width / 2 + padding) * scale
+            start_y = (from_node.y + padding) * scale
+            end_x = (to_node.x - to_node.width / 2 + padding) * scale
+            end_y = (to_node.y + padding) * scale
+
+        draw.line([(start_x, start_y), (end_x, end_y)], fill=self.line_color, width=2)
+        self._draw_arrow(draw, start_x, start_y, end_x, end_y)
+
+    def _draw_switch_case_edge(self, draw: ImageDraw.Draw, graph: FlowchartGraph, edge: FlowchartEdge, padding: int, switch_nodes: Dict[str, Any]):
+        """绘制Switch case专用边
+
+        走线规范：
+        1. 判断框到各分支操作框的连线：
+           - 正下方：直接往下
+           - 左侧：先向下竖（中点距离），然后向左到执行框中点上方，最后向下
+           - 右侧：先向下竖（中点距离），然后向右到执行框中点上方，最后向下
+        2. 各执行框到结束框的连线：
+           - 正下方：直接往下
+           - 左侧：先向下竖（中点距离），然后向左到结束框中点上方，最后向下
+           - 右侧：先向下竖（中点距离），然后向右到结束框中点上方，最后向下
+        """
+        scale = getattr(self, 'scale', 1.0)
+        from_node = graph.nodes[edge.from_node]
+        to_node = graph.nodes[edge.to_node]
+
+        decision_node = graph.nodes[switch_nodes['decision']]
+        end_node = graph.nodes[switch_nodes['end']]
+        branch_nodes = switch_nodes['branches']
+
+        # 判断是否为判断框到分支的边
+        if edge.from_node == switch_nodes['decision'] and edge.to_node in switch_nodes['branches']:
+            # 判断框到分支执行框
+            start_x = (decision_node.x + padding) * scale
+            start_y = (decision_node.y + decision_node.height / 2 + padding) * scale
+            end_x = (to_node.x + padding) * scale
+            end_y = (to_node.y - to_node.height / 2 + padding) * scale
+
+            # 计算中点距离
+            mid_y = (start_y + end_y) / 2
+
+            if abs(to_node.x - decision_node.x) < 1:
+                # 正下方：直接往下
+                draw.line([(start_x, start_y), (end_x, end_y)], fill=self.line_color, width=2)
+                self._draw_arrow(draw, start_x, start_y, end_x, end_y)
+            elif to_node.x < decision_node.x:
+                # 左侧：先向下竖，然后向左，最后向下
+                draw.line([(start_x, start_y), (start_x, mid_y)], fill=self.line_color, width=2)
+                draw.line([(start_x, mid_y), (end_x, mid_y)], fill=self.line_color, width=2)
+                draw.line([(end_x, mid_y), (end_x, end_y)], fill=self.line_color, width=2)
+                self._draw_arrow(draw, end_x, mid_y, end_x, end_y)
+            else:
+                # 右侧：先向下竖，然后向右，最后向下
+                draw.line([(start_x, start_y), (start_x, mid_y)], fill=self.line_color, width=2)
+                draw.line([(start_x, mid_y), (end_x, mid_y)], fill=self.line_color, width=2)
+                draw.line([(end_x, mid_y), (end_x, end_y)], fill=self.line_color, width=2)
+                self._draw_arrow(draw, end_x, mid_y, end_x, end_y)
+
+            # 绘制标签（放在横线上方，确保字整体在横线上方）
+            if edge.label:
+                label_x = end_x
+                label_y = mid_y - 30 * scale
+                bbox = self.font.getbbox(edge.label)
+                text_width = bbox[2] - bbox[0]
+                draw.text((label_x - text_width / 2, label_y), edge.label, fill=self.text_color, font=self.font)
+            return
+
+        # 判断是否为分支到结束框的边
+        if edge.from_node in switch_nodes['branches'] and edge.to_node == switch_nodes['end']:
+            # 分支执行框到结束框
+            start_x = (from_node.x + padding) * scale
+            start_y = (from_node.y + from_node.height / 2 + padding) * scale
+            end_x = (end_node.x + padding) * scale
+            end_y = (end_node.y - end_node.height / 2 + padding) * scale
+
+            # 计算中点距离
+            mid_y = (start_y + end_y) / 2
+
+            if abs(from_node.x - end_node.x) < 1:
+                # 正下方：直接往下
+                draw.line([(start_x, start_y), (end_x, end_y)], fill=self.line_color, width=2)
+                self._draw_arrow(draw, start_x, start_y, end_x, end_y)
+            elif from_node.x < end_node.x:
+                # 左侧：先向下竖，然后向右，最后向下
+                draw.line([(start_x, start_y), (start_x, mid_y)], fill=self.line_color, width=2)
+                draw.line([(start_x, mid_y), (end_x, mid_y)], fill=self.line_color, width=2)
+                draw.line([(end_x, mid_y), (end_x, end_y)], fill=self.line_color, width=2)
+                self._draw_arrow(draw, end_x, mid_y, end_x, end_y)
+            else:
+                # 右侧：先向下竖，然后向左，最后向下
+                draw.line([(start_x, start_y), (start_x, mid_y)], fill=self.line_color, width=2)
+                draw.line([(start_x, mid_y), (end_x, mid_y)], fill=self.line_color, width=2)
+                draw.line([(end_x, mid_y), (end_x, end_y)], fill=self.line_color, width=2)
+                self._draw_arrow(draw, end_x, mid_y, end_x, end_y)
+            return
+
+        # 其他边（开始->初始化，初始化->判断）
+        if graph.direction == 'TD':
+            start_x = (from_node.x + padding) * scale
+            start_y = (from_node.y + from_node.height / 2 + padding) * scale
+            end_x = (to_node.x + padding) * scale
+            end_y = (to_node.y - to_node.height / 2 + padding) * scale
+        else:
+            start_x = (from_node.x + from_node.width / 2 + padding) * scale
+            start_y = (from_node.y + padding) * scale
+            end_x = (to_node.x - to_node.width / 2 + padding) * scale
+            end_y = (to_node.y + padding) * scale
+
+        draw.line([(start_x, start_y), (end_x, end_y)], fill=self.line_color, width=2)
+        self._draw_arrow(draw, start_x, start_y, end_x, end_y)
 
 
 class FlowchartPythonRenderer:

@@ -511,22 +511,12 @@ class WordConverter(BaseConverter):
         )
 
         if success and image_path.exists():
-            # 添加流程图标题
-            title_para = self.doc.add_paragraph()
-            title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            title_run = title_para.add_run(f'流程图 {self.flowchart_counter}')
-            title_run.font.size = Pt(9)
-            title_run.font.color.rgb = RGBColor(128, 128, 128)
-
-            # 插入图片
-            self.doc.add_picture(str(image_path), width=Inches(5))
-
-            # 添加图片说明
-            caption_para = self.doc.add_paragraph()
-            caption_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            caption_run = caption_para.add_run(f'图 {self.flowchart_counter}')
-            caption_run.font.size = Pt(9)
-            caption_run.font.color.rgb = RGBColor(128, 128, 128)
+            # 插入流程图图片（限制尺寸，带标题）
+            self._add_image_with_caption(
+                str(image_path),
+                f'图 {self.flowchart_counter}',
+                max_width=5.5, max_height=6.0
+            )
         else:
             # 渲染失败，添加代码块
             self.log(f"流程图渲染失败，添加为代码块", "warning")
@@ -572,6 +562,54 @@ class WordConverter(BaseConverter):
                 pBdr.append(left)
                 pPr.append(pBdr)
 
+    def _add_image_with_caption(self, image_path: str, caption_text: str,
+                                max_width: float = 5.5, max_height: float = 6.0):
+        """
+        插入图片并附带标题，限制图片尺寸防止撑满整页。
+
+        通过限制最大宽高、设置段落分页控制，确保图片和标题在同一页面内。
+
+        Args:
+            image_path: 图片文件路径
+            caption_text: 标题文本（可为空）
+            max_width: 最大宽度（英寸），默认5.5
+            max_height: 最大高度（英寸），默认6.0
+        """
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(image_path) as img:
+                img_w, img_h = img.size
+        except Exception:
+            img_w, img_h = 800, 600  # 回退默认比例
+
+        # 按比例缩放到限制范围内
+        width = min(max_width, img_w / 96)  # 假设96dpi
+        height = width * img_h / img_w
+        if height > max_height:
+            height = max_height
+            width = height * img_w / img_h
+
+        # 插入图片
+        para = self.doc.add_paragraph()
+        run = para.add_run()
+        run.add_picture(image_path, width=Inches(width))
+
+        # 设置段落属性：居中 + 与下段同页
+        pPr = para._p.get_or_add_pPr()
+        jc = OxmlElement('w:jc')
+        jc.set(qn('w:val'), 'center')
+        pPr.append(jc)
+        keepNext = OxmlElement('w:keepNext')
+        pPr.append(keepNext)
+
+        # 添加标题（紧跟图片）
+        if caption_text:
+            cap = self.doc.add_paragraph()
+            cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = cap.add_run(caption_text)
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor(128, 128, 128)
+
     def _add_image(self, node: Dict[str, Any]):
         """
         添加图片
@@ -609,16 +647,8 @@ class WordConverter(BaseConverter):
                     self.log(f"图片不存在: {src}", "warning")
                     return
 
-            # 插入图片
-            self.doc.add_picture(str(image_path), width=Inches(4))
-
-            # 添加图片标题
-            if alt:
-                caption = self.doc.add_paragraph()
-                caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run = caption.add_run(alt)
-                run.font.size = Pt(9)
-                run.font.color.rgb = RGBColor(128, 128, 128)
+            # 插入图片（限制尺寸，避免撑满整页）
+            self._add_image_with_caption(str(image_path), alt, max_width=5.5, max_height=6.0)
 
         except Exception as e:
             self.log(f"插入图片失败: {e}", "error")

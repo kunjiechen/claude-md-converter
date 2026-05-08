@@ -80,3 +80,4 @@ PYTHONPATH=$SKILL_DIR/scripts python -m md_converter.cli report.md --font "微�
 |------|------|------|
 | 流程图编制规范(MD) | [assets/flowchart_standard.md](assets/flowchart_standard.md) | 流程图 Mermaid 语法参考 |
 | 流程图编制规范(DOCX) | [assets/G-C110 流程图编制规范_A0.docx](assets/G-C110%20流程图编制规范_A0.docx) | 原始规范文档 |
+| Mermaid主题配置 | [assets/mermaid_theme.json](assets/mermaid_theme.json) | mmdc 渲染主题（黑白风格、楷体字体） |

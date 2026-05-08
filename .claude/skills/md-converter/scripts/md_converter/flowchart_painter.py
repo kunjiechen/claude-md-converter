@@ -138,8 +138,8 @@ class MermaidParser:
                 to_label = groups[9] or groups[10] or groups[11] or groups[12] or groups[13] or groups[14] or to_id
 
                 # 确定节点类型
-                from_type = self._detect_node_type(line, from_id)
-                to_type = self._detect_node_type(line, to_id)
+                from_type = self._detect_node_type(line, from_id, from_label)
+                to_type = self._detect_node_type(line, to_id, to_label)
 
                 # 添加节点
                 if from_id not in graph.nodes:
@@ -152,13 +152,12 @@ class MermaidParser:
 
         return graph
 
-    def _detect_node_type(self, line: str, node_id: str) -> str:
-        """检测节点类型"""
-        # 查找节点定义
+    def _detect_node_type(self, line: str, node_id: str, label: str = '') -> str:
+        """检测节点类型，自动识别开始/结束标签为椭圆节点"""
         escaped_id = re.escape(node_id)
         patterns = [
             (escaped_id + r'\{[^}]*\}', 'decision'),  # {text} 菱形
-            (escaped_id + r'\(\[([^\]]*)\]\)', 'start_end'),  # ([text]) 圆角矩形
+            (escaped_id + r'\(\[([^\]]*)\]\)', 'start_end'),  # ([text]) 椭圆
             (escaped_id + r'\(\(([^)]*)\)\)', 'connector'),  # ((text)) 圆形
             (escaped_id + r'\[\[([^\]]*)\]\]', 'data'),  # [[text]] 平行四边形
             (escaped_id + r'\[([^\]]*)\]', 'process'),  # [text] 矩形
@@ -166,6 +165,11 @@ class MermaidParser:
 
         for pattern, node_type in patterns:
             if re.search(pattern, line):
+                # 自动识别：[开始]/[结束]/[Start]/[End] 节点 → 椭圆
+                if node_type == 'process':
+                    start_end_keywords = ['开始', '结束', '开始/结束', 'Start', 'End', 'BEGIN', 'END']
+                    if label in start_end_keywords:
+                        return 'start_end'
                 return node_type
 
         # 默认为处理符号
@@ -328,13 +332,9 @@ class FlowchartPainter:
         max_width = max(node.width for node in graph.nodes.values())
         max_height = max(node.height for node in graph.nodes.values())
         for node in graph.nodes.values():
-            if node.node_type == 'start_end':
-                # 开始/结束框：椭圆形（明显区别于矩形处理框）
-                node.width = max_width * 1.3
-                node.height = max_height * 0.35
-            else:
-                node.width = max_width
-                node.height = max_height
+            # 统一所有节点尺寸（圆角矩形与方框同尺寸）
+            node.width = max_width
+            node.height = max_height
 
         if is_for_loop and graph.direction == 'TD':
             # 使用for循环专用布局
@@ -715,9 +715,10 @@ class FlowchartPainter:
 
         # 根据节点类型绘制形状
         if node.node_type == 'start_end':
-            # 端点符：椭圆（更明显）
-            draw.ellipse([left, top, right, bottom],
-                        fill=self.fill_color, outline=self.line_color, width=2)
+            # 端点符：圆角矩形（标准流程图符号）
+            radius = min(w, h) / 2  # 半圆角 = stadium形状
+            draw.rounded_rectangle([left, top, right, bottom],
+                                   radius=radius, fill=self.fill_color, outline=self.line_color, width=2)
         elif node.node_type == 'decision':
             # 判断：菱形
             points = [

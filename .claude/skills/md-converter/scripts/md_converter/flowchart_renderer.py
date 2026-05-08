@@ -93,7 +93,7 @@ class MermaidRenderer(FlowchartRenderer):
             output_path = Path(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # 构建命令，使用neutral主题（黑白风格）
+            # 构建命令，使用neutral主题（黑白风格），加载skill的mermaid配置
             cmd = [
                 self.mmdc_path,
                 '-i', temp_input,
@@ -101,8 +101,12 @@ class MermaidRenderer(FlowchartRenderer):
                 '-t', 'neutral',
                 '-w', str(self.width),
                 '-H', str(self.height),
-                '-b', 'transparent'
+                '-b', 'transparent',
             ]
+            # 添加配置文件（如果存在）
+            config_file = Path(__file__).parent.parent.parent / 'assets' / 'mermaid_theme.json'
+            if config_file.exists():
+                cmd.extend(['-c', str(config_file)])
 
             # 执行命令，配置Chrome路径
             env = os.environ.copy()

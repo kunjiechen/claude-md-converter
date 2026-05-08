@@ -171,8 +171,14 @@ claude-md-converter/
 │       ├── converter.py
 │       ├── word_converter.py
 │       ├── pdf_converter.py
+│       ├── flowchart_renderer.py
+│       ├── flowchart_painter.py
+│       ├── batch_processor.py
 │       └── cli.py
-├── tests/
+├── verification/
+│   ├── verification_full.md    # 完整验证测试文档
+│   ├── verification_plan.md    # 验证计划和清单
+│   └── output/                 # 验证输出目录
 ├── templates/
 ├── reference/
 │   ├── G-C110 流程图编制规范_A0.docx
@@ -185,6 +191,7 @@ claude-md-converter/
 ```txt
 # requirements.txt
 markdown-it-py>=2.0.0
+mdit-py-plugins>=0.3.0
 python-docx>=0.8.11
 weasyprint>=59.0
 Pillow>=9.0.0
@@ -284,24 +291,37 @@ md-converter ./docs --format=pdf --output=./output
 **实现细节：**
 - 使用markdown-it-py作为解析引擎
 - 实现TokenConverter类，将token流转换为自定义AST
-- 支持元素：标题、段落、列表、表格、代码块、引用、图片、分割线
-- 表格支持通过md.enable('table')启用
+- 支持元素：标题、段落、列表、表格、代码块、引用、图片、分割线、脚注、任务列表
+- 表格支持通过md.enable('table')启用，支持列对齐信息提取
+- 删除线通过md.enable('strikethrough')启用
+- 脚注通过mdit-py-plugins的footnote_plugin启用
+- 内联格式解析：粗体、斜体、删除线、行内代码、超链接、脚注引用
+- 任务列表检测：自动识别[x]/[ ]标记
 - 图片解析支持本地和远程URL
 
 ### 第三阶段：Word转换实现 ✅ 已完成
 - [x] python-docx集成
 - [x] 元素转换实现
+- [x] 内联格式支持（粗体、斜体、删除线、行内代码）
+- [x] 超链接支持（蓝色+下划线可点击链接）
 - [ ] 模板支持（设计预留，后续实现）
 
 **实现细节：**
 - 使用python-docx库生成Word文档
-- 支持元素：标题、段落、列表、表格、代码块、引用、图片、分割线
+- 支持元素：标题、段落、列表、表格、代码块、引用、图片、分割线、脚注、任务列表
 - 字体设置：默认宋体，12号
 - 中文字体支持：使用qn('w:eastAsia')设置
-- 列表支持：有序列表、无序列表、嵌套列表
-- 表格支持：自动创建表格，设置边框样式
-- 代码块：使用Courier New等宽字体
-- 图片插入：支持本地图片，预留远程图片接口
+- 内联格式：粗体、斜体、删除线、行内代码（Courier New + 灰底）、超链接（蓝色下划线可点击）
+- 列表支持：有序列表、无序列表、嵌套列表、任务列表（☑/☐复选框）
+- 表格支持：自动创建表格，设置边框样式，支持列对齐（左/中/右）
+- 代码块：Courier New等宽字体 + 浅灰背景底纹
+- 引用块：左侧灰色竖线 + 缩进
+- 分割线：段落底部边框实现
+- 脚注：正文上标编号 + 文档末尾脚注列表
+- 图片插入：支持本地图片、相对路径解析、远程图片下载
+- 内联格式：`**粗体**`、`*斜体*`、`~~删除线~~`、`` `行内代码` `` 均正确映射到Word格式
+- 超链接：`[text](url)` 转为蓝色下划线可点击链接
+- 删除线：通过markdown-it-py的strikethrough插件启用
 
 ### 第四阶段：PDF转换实现 ✅ 已完成（暂时关闭）
 - [x] 方案选择和实现
@@ -399,11 +419,173 @@ md-converter ./docs --format=pdf --output=./output
 - 端到端测试：完整的转换流程验证
 - 所有测试通过：38个测试用例，1.51秒完成
 
+### 第七阶段：Word格式元素调试（当前进行中）
+
+流程图已完成调试，以下是剩余需要调试的Markdown元素，按优先级排列：
+
+#### 调试总览
+
+| 序号 | 元素 | 优先级 | 当前状态 | 涉及文件 | 复杂度 |
+|------|------|--------|----------|----------|--------|
+| 1 | 内联格式（粗体/斜体/删除线/行内代码） | 高 | ✅ 已完成 | parser.py + word_converter.py | 中 |
+| 2 | 超链接 | 高 | ✅ 已完成 | parser.py + word_converter.py | 低 |
+| 3 | 分割线样式 | 中 | ✅ 已完成 | word_converter.py | 低 |
+| 4 | 代码块背景色 | 中 | ✅ 已完成 | word_converter.py | 低 |
+| 5 | 引用块左边框 | 中 | ✅ 已完成 | word_converter.py | 低 |
+| 6 | 表格列对齐 | 中 | ✅ 已完成 | parser.py + word_converter.py | 低 |
+| 7 | 远程图片下载 | 低 | ✅ 已完成 | word_converter.py | 低 |
+| 8 | 图片相对路径 | 低 | ✅ 已完成 | word_converter.py | 低 |
+| 9 | 脚注 | 低 | ✅ 已完成 | parser.py + word_converter.py | 中 |
+| 10 | 任务列表 | 低 | ✅ 已完成 | parser.py + word_converter.py | 低 |
+
+---
+
+#### 调试项1：内联格式（高优先级）✅ 已完成
+
+**问题描述**：`_process_inline_content()` 方法当前直接将整段文本作为纯文本添加，`**粗体**`、`*斜体*`、`~~删除线~~`、`` `行内代码` `` 等格式全部丢失。
+
+**根本原因**：parser.py 的 `_handle_paragraph_open()` 仅提取 `token.content`（纯文本），未解析 inline token 的 children（`strong_open`/`strong_close`、`em_open`/`em_close`、`code_inline`、`s_open`/`s_close`）。
+
+**实现方案**：
+1. **parser.py**：
+   - 新增 `_parse_inline_segments()` 方法，解析 inline token 的 children 为结构化段列表
+   - 新增 `_merge_link_segments()` 方法，合并 link_start/link_end 为完整 link 节点
+   - 修改 `_handle_paragraph_open()`、`_handle_heading_open()`、`_process_list_item()` 使用 segments
+   - 启用 `strikethrough` 插件支持 `~~删除线~~` 语法
+2. **word_converter.py**：
+   - 重写 `_process_inline_content()` 支持 segments 参数，为每段创建独立 Run 并设置格式
+   - 行内代码使用 Courier New 字体 + 浅灰底纹（`w:shd`）
+
+**验收标准**：`verification/verification_full.md` 第1.2/1.3节中 `**粗体**`→Word粗体、`*斜体*`→Word斜体、`~~删除线~~`→Word删除线、`` `code` ``→等宽字体
+
+---
+
+#### 调试项2：超链接（高优先级）✅ 已完成
+
+**问题描述**：`[text](url)` 在Word中不生成可点击链接。parser 定义了 `NODE_LINK` 常量但无 handler，word_converter 无链接处理逻辑。
+
+**实现方案**：
+1. **parser.py**：在 `_parse_inline_segments()` 中检测 `link_open`/`link_close` token，通过 `_merge_link_segments()` 合并为 `{"type": "link", "content": "显示文本", "href": "url", "title": "..."}` 节点
+2. **word_converter.py**：
+   - 新增 `_add_hyperlink()` 方法，通过 OXML 创建 `w:hyperlink` 元素
+   - 链接样式：蓝色字体（`#0563C1`）+ 单下划线
+   - 在 `_process_inline_content()` 中处理 `link` 类型段
+
+**验收标准**：`verification/verification_full.md` 第6节中 `[GitHub](https://github.com)` 在Word中显示为蓝色可点击链接
+
+---
+
+#### 调试项3：分割线样式（中优先级）✅ 已完成
+
+**问题描述**：`_add_hr()` 当前使用50个下划线字符 `_____` 作为占位，非真正分割线。
+
+**实现方案**：使用 OXML 段落底部边框（`w:pBdr` + `w:bottom`），单线、6pt宽、灰色 #BFBFBF
+
+**验收标准**：`---` 在Word中显示为一条水平灰色分隔线
+
+---
+
+#### 调试项4：代码块背景色（中优先级）✅ 已完成
+
+**问题描述**：代码块仅有等宽字体和缩进，无背景色区分。
+
+**实现方案**：使用 OXML 段落底纹（`w:shd`），填充色 `#F5F5F5` 浅灰
+
+**验收标准**：代码块区域有浅灰色背景，与普通段落明显区分
+
+---
+
+#### 调试项5：引用块左边框（中优先级）✅ 已完成
+
+**问题描述**：引用块仅有缩进和斜体，无左侧竖线标识。
+
+**实现方案**：使用 OXML 段落左边框（`w:pBdr` + `w:left`），单线、18pt宽、灰色 #BFBFBF
+
+**验收标准**：引用块左侧有灰色竖线，视觉上与普通段落区分
+
+---
+
+#### 调试项6：表格列对齐（中优先级）✅ 已完成
+
+**问题描述**：Markdown表格的 `:---:`（居中）、`---:`（右对齐）对齐方式被忽略，所有单元格默认左对齐。
+
+**实现方案**：
+1. **parser.py**：`_process_table_cell()` 从 `th_open`/`td_open` token 的 `attrs['style']` 中提取 `text-align` 值，存入 `attributes.align`
+2. **word_converter.py**：`_add_table()` 中根据 `align` 设置单元段落对齐（`WD_ALIGN_PARAGRAPH.CENTER`/`RIGHT`）
+
+**验收标准**：`verification/verification_full.md` 第3.3节对齐表格中，居中列文本居中，右对齐列文本右对齐
+
+---
+
+#### 调试项7-8：图片路径处理（低优先级）✅ 已完成
+
+**问题描述**：
+- 远程图片（http/https URL）未实现下载
+- 相对路径图片未基于输入文件路径解析
+
+**实现方案**：
+- **远程图片**：新增 `_download_remote_image()` 方法，使用 `urllib.request.urlopen()` 下载到临时目录（15秒超时），自动推断文件扩展名
+- **相对路径**：`convert_file()` 中记录 `input_dir`，`_add_image()` 中先尝试绝对路径，再尝试 `input_dir / src` 相对路径
+
+**验收标准**：本地相对路径图片正确插入，远程图片下载后插入（网络可用时）
+
+---
+
+#### 调试项9：脚注（低优先级）✅ 已完成
+
+**问题描述**：`[^1]` 和 `[^1]: content` 语法未解析和转换。
+
+**实现方案**：
+1. **parser.py**：安装并启用 `mdit-py-plugins` 的 `footnote_plugin`；新增 `_handle_footnote_block_open()` 和 `_process_footnote()` 处理脚注块；在 `_parse_inline_segments()` 中处理 `footnote_ref` token
+2. **word_converter.py**：
+   - `_process_inline_content()` 中处理 `footnote_ref`，渲染为蓝色上标编号 `[N]`
+   - 新增 `_add_footnote_block()` 方法，在文档末尾渲染脚注列表（分隔线 + 编号 + 内容）
+
+**验收标准**：脚注文本有上标编号，注释内容在文档末尾
+
+---
+
+#### 调试项10：任务列表（低优先级）✅ 已完成
+
+**问题描述**：`- [x]` 和 `- [ ]` 语法未特殊处理。
+
+**实现方案**：
+1. **parser.py**：`_process_list_item()` 中检测 inline content 是否以 `[x]`/`[X]`/`[ ]` 开头，设置 `task_checked` 属性并从内容中移除标记
+2. **word_converter.py**：`_add_list()` 中检测 `task_checked` 属性，在内容前添加 `☑`（已完成）或 `☐`（未完成）复选框字符
+
+**验收标准**：已完成任务显示 `☑` 勾选标记，未完成任务显示 `☐` 空白框
+
+---
+
+### 调试执行顺序建议
+
+```
+第一批（核心格式）✅ 已完成：
+  ├── 调试项1：内联格式 → parser.py + word_converter.py
+  └── 调试项2：超链接   → parser.py + word_converter.py
+
+第二批（样式优化）✅ 已完成：
+  ├── 调试项3：分割线   → word_converter.py
+  ├── 调试项4：代码块背景 → word_converter.py
+  ├── 调试项5：引用块边框 → word_converter.py
+  └── 调试项6：表格对齐  → parser.py + word_converter.py
+
+第三批（可选增强）✅ 已完成：
+  ├── 调试项7：远程图片  → word_converter.py
+  ├── 调试项8：相对路径  → word_converter.py + cli.py
+  ├── 调试项9：脚注     → parser.py + word_converter.py
+  └── 调试项10：任务列表 → parser.py + word_converter.py
+```
+
+每完成一个调试项后，使用 `verification/verification_full.md` 中对应的测试章节进行验证。
+
 ## 下一步行动
-1. 项目基本完成
-2. 可选：添加更多功能
-   - 流程图支持（Mermaid/PlantUML）
-   - 模板支持（Word/PDF）
-   - 更多Markdown扩展
-3. 可选：发布到PyPI
-4. 可选：添加CI/CD配置
+1. ~~项目基本完成~~
+2. **当前重点**：完成第七阶段Word格式元素调试
+   - ~~第一批：内联格式 + 超链接（高优先级）~~ ✅ 已完成
+   - ~~第二批：分割线 + 代码块背景 + 引用边框 + 表格对齐（中优先级）~~ ✅ 已完成
+   - ~~第三批：图片路径 + 脚注 + 任务列表（低优先级）~~ ✅ 已完成
+3. 可选：PDF功能调试（Word调试完成后）
+4. 可选：模板支持实现
+5. 可选：发布到PyPI
+6. 可选：添加CI/CD配置

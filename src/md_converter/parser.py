@@ -5,6 +5,7 @@ Markdown解析器
 
 from typing import Any, Dict, List, Optional
 from markdown_it import MarkdownIt
+from mdit_py_plugins.footnote import footnote_plugin
 
 
 class MarkdownParser:
@@ -17,6 +18,10 @@ class MarkdownParser:
         self.md = MarkdownIt()
         # 启用表格支持
         self.md.enable('table')
+        # 启用删除线支持
+        self.md.enable('strikethrough')
+        # 启用脚注支持
+        self.md.use(footnote_plugin)
 
     def parse(self, text: str) -> List[Dict[str, Any]]:
         """
@@ -82,17 +87,78 @@ class TokenConverter:
         handler = getattr(self, f'_handle_{token.type}', None)
         if handler:
             return handler(token)
+        # 跳过脚注块（单独处理）
+        if token.type in ('footnote_block_open', 'footnote_block_close',
+                          'footnote_open', 'footnote_close', 'footnote_anchor'):
+            return None
         return None
+
+    def _handle_footnote_block_open(self, token) -> Dict[str, Any]:
+        """处理脚注块"""
+        footnotes = []
+        self.pos += 1
+        while self.pos < len(self.tokens):
+            token = self.tokens[self.pos]
+            if token.type == "footnote_block_close":
+                break
+            elif token.type == "footnote_open":
+                footnote = self._process_footnote()
+                if footnote:
+                    footnotes.append(footnote)
+            self.pos += 1
+        return {
+            "type": "footnote_block",
+            "content": "",
+            "children": footnotes,
+            "attributes": {}
+        }
+
+    def _process_footnote(self) -> Optional[Dict[str, Any]]:
+        """处理单个脚注"""
+        label = ""
+        children = []
+        self.pos += 1
+        while self.pos < len(self.tokens):
+            token = self.tokens[self.pos]
+            if token.type == "footnote_close":
+                break
+            elif token.type == "footnote_anchor":
+                label = token.meta.get("label", "") if token.meta else ""
+            elif token.type in ("paragraph_open", "paragraph_close"):
+                pass
+            elif token.type == "inline":
+                children.append({
+                    "type": NODE_PARAGRAPH,
+                    "content": token.content,
+                    "children": self._parse_inline_segments(token),
+                    "attributes": {}
+                })
+            self.pos += 1
+        return {
+            "type": "footnote",
+            "content": label,
+            "children": children,
+            "attributes": {"label": label}
+        }
 
     def _handle_heading_open(self, token) -> Dict[str, Any]:
         """处理标题开始"""
         level = int(token.tag[1])  # h1 -> 1, h2 -> 2, etc.
         # 获取标题内容（下一个inline token）
         content = ""
+        children = []
         if self.pos + 1 < len(self.tokens):
             next_token = self.tokens[self.pos + 1]
             if next_token.type == "inline":
                 content = next_token.content
+                segments = self._parse_inline_segments(next_token)
+                # 如果有格式化的内联内容，存入children
+                has_formatting = any(
+                    s.get("type") != "text" or s.get("bold") or s.get("italic") or s.get("strikethrough")
+                    for s in segments
+                )
+                if has_formatting:
+                    children = segments
                 self.pos += 1  # 跳过inline token
         # 跳过heading_close
         self.pos += 1
@@ -100,13 +166,12 @@ class TokenConverter:
             "type": NODE_HEADING,
             "content": content,
             "level": level,
-            "children": [],
+            "children": children,
             "attributes": {}
         }
 
     def _handle_paragraph_open(self, token) -> Dict[str, Any]:
         """处理段落开始"""
-        # token参数用于接口一致性，内容在inline token中
         content = ""
         children = []
         if self.pos + 1 < len(self.tokens):
@@ -120,7 +185,14 @@ class TokenConverter:
                         self.pos += 1  # 跳过inline token
                         self.pos += 1  # 跳过paragraph_close
                         return self._handle_inline(next_token)[0]
-                content = next_token.content
+                # 解析内联格式段
+                segments = self._parse_inline_segments(next_token)
+                # 如果只有纯文本，保持content兼容
+                if len(segments) == 1 and segments[0].get("type") == "text" and not segments[0].get("bold") and not segments[0].get("italic") and not segments[0].get("strikethrough"):
+                    content = segments[0].get("content", "")
+                else:
+                    children = segments
+                    content = next_token.content
                 self.pos += 1
         # 跳过paragraph_close
         self.pos += 1
@@ -180,11 +252,40 @@ class TokenConverter:
             if token.type == "list_item_close":
                 break
             elif token.type == "inline":
+                segments = self._parse_inline_segments(token)
+                has_formatting = any(
+                    s.get("type") not in ("text",) or s.get("bold") or s.get("italic") or s.get("strikethrough")
+                    for s in segments
+                )
+                # 检测任务列表
+                task_checked = None
+                content = token.content
+                stripped = content.lstrip()
+                if stripped.startswith('[x] ') or stripped.startswith('[X] '):
+                    task_checked = True
+                    content = stripped[4:]
+                    # 同步更新segments中第一个text段
+                    if segments and segments[0].get("type") == "text":
+                        seg_text = segments[0].get("content", "").lstrip()
+                        if seg_text.startswith('[x] ') or seg_text.startswith('[X] '):
+                            segments[0]["content"] = seg_text[4:]
+                elif stripped.startswith('[ ] '):
+                    task_checked = False
+                    content = stripped[4:]
+                    if segments and segments[0].get("type") == "text":
+                        seg_text = segments[0].get("content", "").lstrip()
+                        if seg_text.startswith('[ ] '):
+                            segments[0]["content"] = seg_text[4:]
+
+                para_attrs = {}
+                if task_checked is not None:
+                    para_attrs["task_checked"] = task_checked
+
                 children.append({
                     "type": NODE_PARAGRAPH,
-                    "content": token.content,
-                    "children": [],
-                    "attributes": {}
+                    "content": content,
+                    "children": segments if has_formatting else [],
+                    "attributes": para_attrs
                 })
             elif token.type in ("bullet_list_open", "ordered_list_open"):
                 # 嵌套列表
@@ -247,7 +348,7 @@ class TokenConverter:
             if token.type == "tr_close":
                 break
             elif token.type in ("th_open", "td_open"):
-                cell = self._process_table_cell()
+                cell = self._process_table_cell(open_token=token)
                 if cell:
                     cells.append(cell)
             self.pos += 1
@@ -258,9 +359,14 @@ class TokenConverter:
             "attributes": {}
         }
 
-    def _process_table_cell(self) -> Optional[Dict[str, Any]]:
+    def _process_table_cell(self, open_token=None) -> Optional[Dict[str, Any]]:
         """处理表格单元格"""
         content = ""
+        align = ""
+        if open_token and open_token.attrs:
+            style = open_token.attrs.get("style", "")
+            if "text-align:" in style:
+                align = style.split("text-align:")[1].strip().rstrip(";")
         self.pos += 1
         while self.pos < len(self.tokens):
             token = self.tokens[self.pos]
@@ -273,7 +379,7 @@ class TokenConverter:
             "type": NODE_TABLE_CELL,
             "content": content,
             "children": [],
-            "attributes": {}
+            "attributes": {"align": align}
         }
 
     def _handle_fence(self, token) -> Dict[str, Any]:
@@ -335,6 +441,111 @@ class TokenConverter:
             "children": [],
             "attributes": {}
         }
+
+    def _parse_inline_segments(self, token) -> List[Dict[str, Any]]:
+        """
+        解析inline token的children为结构化段落内容
+
+        Returns:
+            段落节点，children中包含文本段和内联元素
+        """
+        segments = []
+        if not token.children:
+            if token.content:
+                segments.append({"type": "text", "content": token.content})
+            return segments
+
+        bold = False
+        italic = False
+        strikethrough = False
+
+        for child in token.children:
+            if child.type == "strong_open":
+                bold = True
+            elif child.type == "strong_close":
+                bold = False
+            elif child.type == "em_open":
+                italic = True
+            elif child.type == "em_close":
+                italic = False
+            elif child.type == "s_open":
+                strikethrough = True
+            elif child.type == "s_close":
+                strikethrough = False
+            elif child.type == "text":
+                segments.append({
+                    "type": "text",
+                    "content": child.content,
+                    "bold": bold,
+                    "italic": italic,
+                    "strikethrough": strikethrough,
+                })
+            elif child.type == "code_inline":
+                segments.append({
+                    "type": "code_inline",
+                    "content": child.content,
+                })
+            elif child.type == "link_open":
+                href = child.attrGet("href") or ""
+                title = child.attrGet("title") or ""
+                # 链接文本在后续的text token中，先记录状态
+                segments.append({
+                    "type": "link_start",
+                    "href": href,
+                    "title": title,
+                })
+            elif child.type == "link_close":
+                segments.append({"type": "link_end"})
+            elif child.type == "image":
+                segments.append({
+                    "type": NODE_IMAGE,
+                    "content": child.content,
+                    "children": [],
+                    "attributes": {
+                        "src": child.attrGet("src") or "",
+                        "alt": child.content,
+                        "title": child.attrGet("title") or ""
+                    }
+                })
+            elif child.type == "footnote_ref":
+                label = child.meta.get("label", "") if child.meta else ""
+                segments.append({"type": "footnote_ref", "label": label})
+            elif child.type == "softbreak":
+                segments.append({"type": "softbreak"})
+            elif child.type == "hardbreak":
+                segments.append({"type": "hardbreak"})
+
+        return self._merge_link_segments(segments)
+
+    def _merge_link_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """将link_start/link_end之间的段合并为单个link节点"""
+        merged = []
+        i = 0
+        while i < len(segments):
+            seg = segments[i]
+            if seg.get("type") == "link_start":
+                # 收集链接内的文本
+                link_text_parts = []
+                href = seg.get("href", "")
+                title = seg.get("title", "")
+                i += 1
+                while i < len(segments) and segments[i].get("type") != "link_end":
+                    s = segments[i]
+                    if s.get("type") in ("text", "code_inline"):
+                        link_text_parts.append(s.get("content", ""))
+                    i += 1
+                merged.append({
+                    "type": "link",
+                    "content": "".join(link_text_parts),
+                    "href": href,
+                    "title": title,
+                })
+            elif seg.get("type") == "link_end":
+                pass  # 已在link_start中处理
+            else:
+                merged.append(seg)
+            i += 1
+        return merged
 
     def _handle_inline(self, token) -> List[Dict[str, Any]]:
         """处理内联内容"""

@@ -329,9 +329,9 @@ class FlowchartPainter:
         max_height = max(node.height for node in graph.nodes.values())
         for node in graph.nodes.values():
             if node.node_type == 'start_end':
-                # 开始/结束框：竖向椭圆（高度大于宽度）
-                node.width = max_width * 0.8
-                node.height = max_height * 1.2
+                # 开始/结束框：横向椭圆（明显区别于矩形处理框）
+                node.width = max_width * 1.1
+                node.height = max_height * 0.55
             else:
                 node.width = max_width
                 node.height = max_height

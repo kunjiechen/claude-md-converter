@@ -217,58 +217,55 @@ md-converter ./docs --format=pdf --output=./output
 
 ## 风险评估
 
-### 高风险项
+### 高风险项（当前）
 
-1. **流程图依赖Chrome**
-   - 风险：mermaid-cli依赖Chrome/puppeteer，增加部署复杂度
-   - 影响：流程图功能无法在无Chrome环境使用
-   - 缓解方案：
-     - 使用Kroki在线API（已实现，但不稳定）
-     - 降级为代码块显示（已实现）
-     - 后续考虑轻量级渲染方案
+1. **流程图非graph类型依赖外部工具**
+   - 风险：时序图(sequenceDiagram)、甘特图(gantt)、类图(classDiagram)等非flowchart类型，Python渲染器无法处理
+   - 影响：无Chrome/mmdc环境下这些图表类型无法渲染
+   - 缓解方案：降级为代码块显示；后续扩展Python渲染器
 
-2. **模板支持未实现**
-   - 风险：Word/PDF模板功能仅为接口预留，未完整实现
-   - 影响：无法满足企业文档定制需求
-   - 缓解方案：后续版本实现模板功能
+2. **PDF内联格式缺失**
+   - 风险：PDF转换器未处理内联格式段（segments），粗体/斜体/代码/链接/脚注全部丢失
+   - 影响：PDF输出质量差，不适合正式交付
+   - 缓解方案：重构PDF转换器支持segments
+
+3. **LaTeX/数学公式不支持**
+   - 风险：`$...$` 和 `$$...$$` 公式未被解析和渲染
+   - 影响：技术文档中的数学公式丢失
+   - 缓解方案：启用markdown-it-py math插件
 
 ### 中风险项
 
-3. **样式保真度**
-   - 风险：复杂Markdown元素在Word/PDF中的呈现可能不完美
-   - 影响：部分格式可能丢失或变形
-   - 缓解方案：持续优化转换逻辑
+4. **HTML内联元素不支持**
+   - 风险：`<kbd>`、`<sub>`、`<sup>`、`==highlight==` 被静默丢弃
+   - 影响：扩展语法内容丢失
+   - 缓解方案：处理html_inline token类型
 
-4. **性能问题**
-   - 风险：大文件或批量处理时的内存和速度
-   - 影响：处理大量文件时可能较慢
-   - 缓解方案：已实现并行处理，可进一步优化
+5. **表格单元格无内联格式**
+   - 风险：表格单元格以纯文本写入，单元格内格式丢失
+   - 影响：富文本表格转换后格式错误
+   - 缓解方案：parser提取cell segments + word_converter逐段添加
+
+6. **模板支持未实现**
+   - 风险：模板功能仅为接口预留
+   - 影响：无法满足企业定制需求
+   - 缓解方案：后续版本实现
 
 ### 低风险项
 
-5. **依赖兼容性**
-   - 风险：不同操作系统下的字体和渲染差异
-   - 影响：跨平台显示效果可能不同
-   - 缓解方案：使用通用字体，测试多平台
+7. **嵌套引用块无渐进缩进** — 多层嵌套引用块渲染为同级
+8. **定义列表无特殊格式** — `term\n: definition` 渲染为普通段落
+9. **Word原生脚注未使用** — 当前为模拟实现，非Word原生`w:footnoteReference`
+10. **高级Word功能缺失** — 页眉/页脚、目录(TOC)、硬分页符、页码未实现
+11. **依赖兼容性** — 跨平台字体和渲染差异
+12. **Kroki API稳定性** — 在线API响应慢/超时
 
-6. **Kroki API稳定性**
-   - 风险：在线API响应慢，有时超时
-   - 影响：流程图渲染可能失败
-   - 缓解方案：降级为代码块显示
+### 已知限制（当前）
 
-### 已知限制
-
-1. **流程图规范**
-   - 当前Mermaid渲染未完全遵循G-C110规范
-   - 判断框出线规范需要自定义主题
-
-2. **图片处理**
-   - 远程图片下载未实现
-   - 图片路径处理需要优化
-
-3. **PDF功能**
-   - weasyprint版本需要系统依赖pango
-   - reportlab版本功能相对简单
+1. **PDF功能默认关闭**，需 `--enable-pdf` 参数启用；两个PDF转换器均无内联格式支持
+2. **模板支持**仅预留接口，样式覆盖机制未实现
+3. **PlantUML**需依赖plantuml CLI或Kroki API，Python渲染器不支持
+4. **非flowchart图表**（时序图/甘特图/类图/状态图/饼图）仅支持mmdc CLI或Kroki API
 
 ## 进度跟踪
 
@@ -579,13 +576,222 @@ md-converter ./docs --format=pdf --output=./output
 
 每完成一个调试项后，使用 `verification/verification_full.md` 中对应的测试章节进行验证。
 
+---
+
+### 第八阶段：剩余格式元素调试（当前进行中）
+
+Phase 7 的10个调试项已全部完成，以下是新识别出的待实现/待修复项，按优先级排列：
+
+#### 调试总览
+
+| 序号 | 元素 | 优先级 | 当前状态 | 涉及文件 | 复杂度 |
+|------|------|--------|----------|----------|--------|
+| 1 | 表格单元格内联格式 | 高 | ✅ 已完成 | parser.py + word_converter.py | 中 |
+| 2 | LaTeX/数学公式 | 高 | ✅ 已完成 | parser.py + word_converter.py + pdf_converter.py | 高 |
+| 3 | HTML内联元素（kbd/sub/sup/mark） | 中 | ✅ 已完成 | parser.py + word_converter.py + pdf_converter.py | 中 |
+| 4 | PDF内联格式支持 | 中 | ✅ 已完成 | pdf_converter.py + pdf_converter_reportlab.py | 高 |
+| 5 | 定义列表支持 | 中 | ✅ 已完成 | parser.py + word_converter.py + pdf_converter.py | 中 |
+| 6 | 嵌套引用块渐进缩进 | 低 | ❌ 未实现 | word_converter.py | 低 |
+| 7 | ==highlight== 高亮语法 | 低 | ❌ 未实现 | parser.py + word_converter.py | 低 |
+| 8 | Word原生脚注 | 低 | ❌ 未实现 | word_converter.py | 中 |
+| 9 | 非flowchart图表Python渲染 | 低 | ❌ 未实现 | flowchart_painter.py | 高 |
+| 10 | 页眉/页脚/页码 | 低 | ❌ 未实现 | word_converter.py | 中 |
+| 11 | 目录(TOC) | 低 | ❌ 未实现 | word_converter.py | 低 |
+| 12 | 硬分页符 | 低 | ❌ 未实现 | word_converter.py + parser.py | 低 |
+
+---
+
+#### 调试项1：表格单元格内联格式（高优先级）
+
+**问题描述**：`_add_table()` 中通过 `cell.text = cell_node.get('content', '')` 写入纯文本，单元格内的 `**粗体**`、`*斜体*`、`` `代码` ``、`[链接](url)` 等格式全部丢失。
+
+**根本原因**：
+1. **parser.py** `_process_table_cell()`：从 inline token 仅提取 `content`（纯文本），未调用 `_parse_inline_segments()` 提取结构化段
+2. **word_converter.py** `_add_table()`：使用 `cell.text` 一次性写入纯文本，未逐段添加 Run
+
+**实现方案**：
+1. **parser.py**：修改 `_process_table_cell()`，调用 `self._parse_inline_segments(inline_token)` 提取 segments，存入 `children`
+2. **word_converter.py**：修改 `_add_table()`，当 `cell_node` 有 `children`（segments）时，清除默认段落，逐段调用 `_process_inline_content()` 添加格式化 Run
+
+**验收标准**：表格单元格中 `**粗体**`→Word粗体、`*斜体*`→Word斜体、`` `代码` ``→等宽字体
+
+---
+
+#### 调试项2：LaTeX/数学公式（高优先级）
+
+**问题描述**：`$a^2 + b^2 = c^2$` 内联公式和 `$$\sum$$` 块级公式被当作普通文本渲染，公式完全丢失。
+
+**根本原因**：
+1. markdown-it-py 未启用 math 插件
+2. parser 未处理 `math_inline` / `math_block` token 类型
+3. word_converter 无公式插入逻辑
+
+**实现方案**：
+1. 安装 `markdown-it-math` 或使用 `mdit-py-plugins` 的 `texmath` 插件
+2. **parser.py**：启用 math 插件；新增 `_handle_math_inline()` / `_handle_math_block()` 处理公式 token
+3. **word_converter.py**：两种方案可选：
+   - 方案A（高保真）：使用 OMML (Office Math Markup Language) 插入 Word 公式对象
+   - 方案B（降级）：渲染为图片（使用 matplotlib mathtext）插入
+   - 方案C（占位）：插入 `[公式]` 占位文本
+
+**验收标准**：`verification/verification_full.md` 第11节中 `$a^2 + b^2 = c^2$` 在 Word 中显示为公式
+
+---
+
+#### 调试项3：HTML内联元素（中优先级）
+
+**问题描述**：`<kbd>Ctrl</kbd>`、`<sub>`、`<sup>`、`<mark>` 等 HTML 内联标签被 markdown-it-py 解析为 `html_inline` token，但 `_parse_inline_segments()` 未处理此类型，内容被静默丢弃。
+
+**根本原因**：`_parse_inline_segments()` 的 child token 类型处理列表中缺少 `html_inline` 分支。
+
+**实现方案**：
+1. **parser.py**：在 `_parse_inline_segments()` 中新增 `html_inline` 处理分支：
+   - `<kbd>` → `{"type": "kbd", "content": "..."}`
+   - `<sub>` → `{"type": "sub", "content": "..."}`
+   - `<sup>` → `{"type": "sup", "content": "..."}`
+   - `<mark>` → `{"type": "highlight", "content": "..."}`
+   - 其他 → 提取 innerText 作为纯文本
+2. **word_converter.py**：在 `_process_inline_content()` 中处理新类型：
+   - `kbd` → Courier New + 边框底纹模拟按键样式
+   - `sub` → `run.font.subscript = True`
+   - `sup` → `run.font.superscript = True`
+   - `highlight` → 黄色背景底纹
+
+**验收标准**：`<kbd>Ctrl</kbd>` 显示为按键样式，`<sub>`/`<sup>` 正确上下标
+
+---
+
+#### 调试项4：PDF内联格式支持（中优先级）
+
+**问题描述**：weasyprint 和 reportlab 两种 PDF 转换器均未处理内联格式段（segments），所有段落仅使用 `node.get('content', '')` 纯文本。粗体、斜体、行内代码、超链接、脚注引用在 PDF 中全部丢失。
+
+**根本原因**：
+1. `pdf_converter.py` `_process_paragraph()` / `_process_heading()` 仅输出 `node.get('content')` 纯文本
+2. `pdf_converter_reportlab.py` 同样未使用 segments
+
+**实现方案**：
+1. **pdf_converter.py (weasyprint)**：修改 `_process_paragraph()`，遍历 `segments` 生成对应 HTML 标签（`<strong>`、`<em>`、`<code>`、`<a href>`、`<sup>` 等）
+2. **pdf_converter_reportlab.py**：修改相应方法，为每种 segment 类型使用 reportlab 的对应样式
+
+**验收标准**：PDF 中 `**粗体**` 显示为粗体，`[链接](url)` 可点击
+
+---
+
+#### 调试项5：嵌套引用块渐进缩进（低优先级）
+
+**问题描述**：多层嵌套引用块（`> > > 三层引用`）渲染为同级引用块，视觉上无层级区分。
+
+**根本原因**：`_handle_blockquote_open()` 未记录嵌套深度，`_add_blockquote()` 使用固定 `left_indent = Cm(2)`。
+
+**实现方案**：
+1. **parser.py**：在 blockquote 节点的 `attributes` 中记录嵌套深度 `level`
+2. **word_converter.py**：`_add_blockquote()` 根据 `level` 递增 `left_indent`（基准 `Cm(2)`，每级 `+ Cm(1)`）
+
+**验收标准**：三层嵌套引用块呈现三级递进缩进
+
+---
+
+#### 调试项6：定义列表支持（低优先级）
+
+**问题描述**：Markdown 定义列表语法（`term\n: definition`）未被识别为独立元素，渲染为普通段落。
+
+**根本原因**：markdown-it-py 未启用 `deflist` 插件。
+
+**实现方案**：
+1. **parser.py**：启用 `md.enable('deflist')`；新增 `_handle_dl_open()` / `_handle_dt_open()` / `_handle_dd_open()` handler
+2. **word_converter.py**：新增 `_add_definition_list()` 方法，术语使用粗体+缩进，定义使用进一步缩进
+
+**验收标准**：`术语\n: 定义` 呈现术语（粗体）和定义（缩进）的视觉层次
+
+---
+
+#### 调试项7：==highlight== 高亮语法（低优先级）
+
+**问题描述**：`==高亮文本==` 语法未识别，渲染为普通文本（包含 `==` 符号）。
+
+**根本原因**：未启用 markdown-it-py 的 mark 插件。
+
+**实现方案**：
+1. 安装并启用 `markdown-it-py` 的 mark 插件（或自定义实现）
+2. **parser.py**：在 `_parse_inline_segments()` 中处理 `mark_open` / `mark_close` token，生成 `{"type": "highlight", ...}` 段
+3. **word_converter.py**：在 `_process_inline_content()` 中处理 `highlight` 类型，使用黄色底纹（`FFFF00`）
+
+**验收标准**：`==高亮文本==` 显示为黄色背景高亮
+
+---
+
+#### 调试项8：Word原生脚注（低优先级）
+
+**问题描述**：当前脚注使用上标文本 `[N]` + 文档末尾列表模拟，非 Word 原生 `w:footnoteReference`。无法使用 Word 的脚注导航、自动页面底部分页等功能。
+
+**根本原因**：python-docx 对原生脚注的 API 支持有限，需要直接操作 OXML。
+
+**实现方案**：
+- 使用 python-docx 的 OXML 操作创建 `w:footnoteReference` 和 `w:footnote`
+- 在 `word/footnotes.xml` 中添加脚注内容
+- 在正文中使用 `w:footnoteReference` 引用
+
+**验收标准**：Word 中脚注显示在页面底部，可点击导航
+
+---
+
+#### 调试项9：非flowchart图表Python渲染（低优先级）
+
+**问题描述**：时序图(sequenceDiagram)、甘特图(gantt)、类图(classDiagram)、状态图(stateDiagram)、饼图(pie) 等非 flowhchart 类型的 Mermaid 图表，Python/Pillow 渲染器无法处理，只能降级到 mmdc CLI 或 Kroki API。
+
+**根本原因**：`flowchart_painter.py` 的 `MermaidParser` 仅解析 `graph`/`flowchart` 语法。
+
+**实现方案**：
+- 按图表类型逐步扩展 Python 渲染器：
+  1. 时序图（sequenceDiagram）：使用 Pillow 绘制 lifeline 和消息箭头
+  2. 类图（classDiagram）：绘制 UML 类框和关系线
+  3. 甘特图（gantt）：绘制时间条和依赖箭头
+
+**验收标准**：至少支持时序图和甘特图的 Python 渲染
+
+---
+
+#### 调试项10-12：高级Word功能（低优先级）
+
+**10. 页眉/页脚**：在 `_create_document()` 中通过 `doc.sections[0].header` 添加页眉，`doc.sections[0].footer` 添加页脚。支持从配置读取页眉/页脚文本。
+
+**11. 目录(TOC)**：在文档开头通过 OXML 插入 `w:sdt` 结构化文档标签（TOC 域代码）。Word 打开时自动更新目录。
+
+**12. 硬分页符**：在 `parser.py` 中支持识别 `===` 或 HTML `<!-- pagebreak -->` 标记；在 `word_converter.py` 中通过 `run.add_break(docx.enum.text.WD_BREAK.PAGE)` 或 `OxmlElement('w:br')` 插入分页符。
+
+---
+
+### 调试执行顺序建议
+
+```
+第一批（核心缺陷 - 影响富文本保真度）：
+  ├── 调试项1：表格单元格内联格式 → parser.py + word_converter.py
+  └── 调试项2：LaTeX/数学公式      → parser.py + word_converter.py
+
+第二批（扩展语法 - 补充格式覆盖）：
+  ├── 调试项3：HTML内联元素        → parser.py + word_converter.py
+  ├── 调试项4：PDF内联格式支持     → pdf_converter.py
+  └── 调试项6：定义列表            → parser.py + word_converter.py
+
+第三批（样式增强 - 改善视觉效果）：
+  ├── 调试项5：嵌套引用块缩进      → word_converter.py
+  └── 调试项7：==highlight== 高亮   → parser.py + word_converter.py
+
+第四批（高级特性 - 锦上添花）：
+  ├── 调试项8：Word原生脚注        → word_converter.py
+  ├── 调试项9：非flowchart图表      → flowchart_painter.py
+  ├── 调试项10：页眉/页脚/页码     → word_converter.py
+  ├── 调试项11：目录(TOC)          → word_converter.py
+  └── 调试项12：硬分页符           → word_converter.py + parser.py
+```
+
 ## 下一步行动
-1. ~~项目基本完成~~
-2. **当前重点**：完成第七阶段Word格式元素调试
-   - ~~第一批：内联格式 + 超链接（高优先级）~~ ✅ 已完成
-   - ~~第二批：分割线 + 代码块背景 + 引用边框 + 表格对齐（中优先级）~~ ✅ 已完成
-   - ~~第三批：图片路径 + 脚注 + 任务列表（低优先级）~~ ✅ 已完成
-3. 可选：PDF功能调试（Word调试完成后）
-4. 可选：模板支持实现
-5. 可选：发布到PyPI
-6. 可选：添加CI/CD配置
+1. **当前重点**：完成第八阶段剩余格式元素调试
+   - ~~第七阶段（10项全部完成）~~ ✅
+   - 第一批：表格单元格内联格式 + LaTeX/数学公式（高优先级）
+   - 第二批：HTML内联元素 + PDF内联格式 + 定义列表
+   - 第三批：嵌套引用块缩进 + highlight高亮
+   - 第四批：Word原生脚注 + 非flowchart图表 + 高级Word功能
+2. 可选：模板支持完整实现
+3. 可选：发布到PyPI
+4. 可选：添加CI/CD配置

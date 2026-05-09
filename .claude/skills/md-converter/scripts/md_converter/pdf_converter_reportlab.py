@@ -282,25 +282,101 @@ class PDFConverterReportlab(BaseConverter):
             return self._process_image(node, styles)
         elif node_type == 'hr':
             return self._process_hr(node, styles)
+        elif node_type == 'math_block':
+            return self._process_math_block(node, styles)
+        elif node_type == 'definition_list':
+            return self._process_definition_list(node, styles)
+        elif node_type == 'footnote_block':
+            return self._process_footnote_block(node, styles)
         else:
             return []
+
+    def _render_inline_segments(self, segments: List[Dict[str, Any]], plain_text: str) -> str:
+        """将内联格式段渲染为reportlab XML标记文本"""
+        if not segments:
+            return self._escape_xml(plain_text)
+
+        parts = []
+        for seg in segments:
+            seg_type = seg.get('type', 'text')
+
+            if seg_type == 'text':
+                text = self._escape_xml(seg.get('content', ''))
+                if seg.get('bold'):
+                    text = f'<b>{text}</b>'
+                if seg.get('italic'):
+                    text = f'<i>{text}</i>'
+                if seg.get('strikethrough'):
+                    text = f'<strike>{text}</strike>'
+                if seg.get('underline'):
+                    text = f'<u>{text}</u>'
+                parts.append(text)
+
+            elif seg_type == 'code_inline':
+                text = self._escape_xml(seg.get('content', ''))
+                parts.append(f'<font face="Courier" color="#C7254E" backColor="#F9F2F4">{text}</font>')
+
+            elif seg_type == 'link':
+                text = self._escape_xml(seg.get('content', ''))
+                href = seg.get('href', '')
+                parts.append(f'<a href="{href}" color="blue"><u>{text}</u></a>')
+
+            elif seg_type == 'footnote_ref':
+                label = seg.get('label', '')
+                parts.append(f'<super><font color="blue">[{label}]</font></super>')
+
+            elif seg_type == 'math_inline':
+                text = self._escape_xml(seg.get('content', ''))
+                parts.append(f'<font face="Times" backColor="#F0F4FF">${text}$</font>')
+
+            elif seg_type == 'kbd':
+                text = self._escape_xml(seg.get('content', ''))
+                parts.append(f'<font face="Courier" backColor="#EBEBEB">[{text}]</font>')
+
+            elif seg_type == 'sub':
+                text = self._escape_xml(seg.get('content', ''))
+                parts.append(f'<sub>{text}</sub>')
+
+            elif seg_type == 'sup':
+                text = self._escape_xml(seg.get('content', ''))
+                parts.append(f'<super>{text}</super>')
+
+            elif seg_type == 'highlight':
+                text = self._escape_xml(seg.get('content', ''))
+                parts.append(f'<font backColor="#FFFF00">{text}</font>')
+
+            elif seg_type == 'softbreak':
+                parts.append('<br/>')
+            elif seg_type == 'hardbreak':
+                parts.append('<br/>')
+
+        return ''.join(parts)
+
+    @staticmethod
+    def _escape_xml(text: str) -> str:
+        """转义XML特殊字符"""
+        return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
     def _process_heading(self, node: Dict[str, Any], styles: Dict[str, ParagraphStyle]) -> List:
         """处理标题"""
         level = node.get('level', 1)
+        segments = node.get('children', [])
         content = node.get('content', '')
+        inner = self._render_inline_segments(segments, content)
 
         style_name = f'Heading{level}'
         style = styles.get(style_name, styles['Normal'])
 
-        return [Paragraph(content, style)]
+        return [Paragraph(inner, style)]
 
     def _process_paragraph(self, node: Dict[str, Any], styles: Dict[str, ParagraphStyle]) -> List:
         """处理段落"""
+        segments = node.get('children', [])
         content = node.get('content', '')
+        inner = self._render_inline_segments(segments, content)
         style = styles['Normal']
 
-        return [Paragraph(content, style)]
+        return [Paragraph(inner, style)]
 
     def _process_list(self, node: Dict[str, Any], styles: Dict[str, ParagraphStyle]) -> List:
         """处理列表"""
@@ -336,7 +412,9 @@ class PDFConverterReportlab(BaseConverter):
         content_parts = []
         for child in node.get('children', []):
             if child.get('type') == 'paragraph':
-                content_parts.append(child.get('content', ''))
+                segments = child.get('children', [])
+                content = child.get('content', '')
+                content_parts.append(self._render_inline_segments(segments, content))
         return ' '.join(content_parts)
 
     def _process_table(self, node: Dict[str, Any], styles: Dict[str, ParagraphStyle]) -> List:
@@ -351,8 +429,10 @@ class PDFConverterReportlab(BaseConverter):
         for row_node in children:
             row_data = []
             for cell_node in row_node.get('children', []):
-                cell_content = cell_node.get('content', '')
-                row_data.append(Paragraph(cell_content, styles['Normal']))
+                segments = cell_node.get('children', [])
+                content = cell_node.get('content', '')
+                cell_inner = self._render_inline_segments(segments, content)
+                row_data.append(Paragraph(cell_inner, styles['Normal']))
             table_data.append(row_data)
 
         if not table_data:
@@ -449,10 +529,15 @@ class PDFConverterReportlab(BaseConverter):
         elements = []
 
         for child in children:
-            if child.get('type') == 'paragraph':
+            child_type = child.get('type')
+            if child_type == 'paragraph':
+                segments = child.get('children', [])
                 content = child.get('content', '')
+                inner = self._render_inline_segments(segments, content)
                 quote_style = styles['Quote']
-                elements.append(Paragraph(content, quote_style))
+                elements.append(Paragraph(inner, quote_style))
+            elif child_type in ('heading', 'code_block', 'table', 'list'):
+                elements.extend(self._process_node(child, styles))
 
         return elements
 
@@ -476,3 +561,46 @@ class PDFConverterReportlab(BaseConverter):
         hr_table.setStyle(hr_style)
 
         return [hr_table]
+
+    def _process_math_block(self, node: Dict[str, Any], styles: Dict[str, ParagraphStyle]) -> List:
+        """处理块级数学公式"""
+        content = node.get('content', '')
+        text = f'<font face="Times" backColor="#F0F4FF">$${self._escape_xml(content)}$$</font>'
+        return [Paragraph(text, styles['Code'])]
+
+    def _process_definition_list(self, node: Dict[str, Any], styles: Dict[str, ParagraphStyle]) -> List:
+        """处理定义列表"""
+        items = node.get('children', [])
+        elements = []
+        dl_style = styles['Normal']
+        for item in items:
+            for term in item.get('terms', []):
+                term_text = self._escape_xml(term.get('content', ''))
+                elements.append(Paragraph(f'<b>{term_text}</b>', dl_style))
+            desc = item.get('description', {})
+            if desc.get('content'):
+                desc_text = self._escape_xml(desc.get('content', ''))
+                desc_style = ParagraphStyle('DescTmp', parent=dl_style, leftIndent=20)
+                elements.append(Paragraph(desc_text, desc_style))
+        return elements
+
+    def _process_footnote_block(self, node: Dict[str, Any], styles: Dict[str, ParagraphStyle]) -> List:
+        """处理脚注块"""
+        children = node.get('children', [])
+        if not children:
+            return []
+        elements = [Paragraph('<hr/>', styles['Normal'])]
+        fn_style = ParagraphStyle('FootnoteTmp', parent=styles['Normal'],
+                                  fontSize=9, textColor=HexColor('#666666'))
+        for i, fn in enumerate(children):
+            if fn.get('type') != 'footnote':
+                continue
+            label = fn.get('attributes', {}).get('label', str(i + 1))
+            parts = [f'<super><font color="blue">[{label}]</font></super> ']
+            for child in fn.get('children', []):
+                if child.get('type') == 'paragraph':
+                    segments = child.get('children', [])
+                    text = child.get('content', '')
+                    parts.append(self._render_inline_segments(segments, text))
+            elements.append(Paragraph(''.join(parts), fn_style))
+        return elements

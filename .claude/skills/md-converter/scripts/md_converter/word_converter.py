@@ -164,6 +164,12 @@ class WordConverter(BaseConverter):
             self._add_hr(node)
         elif node_type == 'footnote_block':
             self._add_footnote_block(node)
+        elif node_type == 'math_block':
+            self._add_math_block(node)
+        elif node_type == 'math_inline':
+            self._add_math_inline_para(node)
+        elif node_type == 'definition_list':
+            self._add_definition_list(node)
 
     def _add_heading(self, node: Dict[str, Any]):
         """
@@ -244,6 +250,8 @@ class WordConverter(BaseConverter):
                     run.font.italic = True
                 if seg.get("strikethrough"):
                     run.font.strike = True
+                if seg.get("underline"):
+                    run.font.underline = True
                 # 设置中文字体
                 run.element.rPr.rFonts.set(qn('w:eastAsia'), self.font)
 
@@ -286,6 +294,61 @@ class WordConverter(BaseConverter):
 
             elif seg_type == "hardbreak":
                 para.add_run('\n')
+
+            elif seg_type == "math_inline":
+                text = seg.get("content", "")
+                run = para.add_run(f' ${text}$ ')
+                run.font.name = 'Cambria Math'
+                run.font.size = Pt(self.font_size)
+                run.font.italic = True
+                # 浅蓝背景区分公式
+                shading = OxmlElement('w:shd')
+                shading.set(qn('w:val'), 'clear')
+                shading.set(qn('w:color'), 'auto')
+                shading.set(qn('w:fill'), 'F0F4FF')
+                run.element.rPr.append(shading)
+
+            elif seg_type == "kbd":
+                text = seg.get("content", "")
+                run = para.add_run(text)
+                run.font.name = 'Courier New'
+                run.font.size = Pt(self.font_size - 1)
+                # 按键边框+灰底
+                shading = OxmlElement('w:shd')
+                shading.set(qn('w:val'), 'clear')
+                shading.set(qn('w:color'), 'auto')
+                shading.set(qn('w:fill'), 'EBEBEB')
+                run.element.rPr.append(shading)
+                # 细边框通过字符边框实现
+                bdr = OxmlElement('w:bdr')
+                bdr.set(qn('w:val'), 'single')
+                bdr.set(qn('w:sz'), '4')
+                bdr.set(qn('w:space'), '1')
+                bdr.set(qn('w:color'), 'A0A0A0')
+                run.element.rPr.append(bdr)
+
+            elif seg_type == "sub":
+                text = seg.get("content", "")
+                run = para.add_run(text)
+                run.font.size = Pt(self.font_size - 2)
+                run.font.subscript = True
+
+            elif seg_type == "sup":
+                text = seg.get("content", "")
+                run = para.add_run(text)
+                run.font.size = Pt(self.font_size - 2)
+                run.font.superscript = True
+
+            elif seg_type == "highlight":
+                text = seg.get("content", "")
+                run = para.add_run(text)
+                run.font.name = self.font
+                run.font.size = Pt(self.font_size)
+                shading = OxmlElement('w:shd')
+                shading.set(qn('w:val'), 'clear')
+                shading.set(qn('w:color'), 'auto')
+                shading.set(qn('w:fill'), 'FFFF00')
+                run.element.rPr.append(shading)
 
     def _add_hyperlink(self, para, text: str, url: str):
         """
@@ -436,19 +499,38 @@ class WordConverter(BaseConverter):
             for j, cell_node in enumerate(row_cells):
                 if j < cols:
                     cell = table.cell(i, j)
-                    cell.text = cell_node.get('content', '')
-
-                    # 设置中文字体和对齐
+                    segments = cell_node.get('children', [])
                     align = cell_node.get('attributes', {}).get('align', '')
-                    for para in cell.paragraphs:
+
+                    if segments:
+                        # 有内联格式，清除默认段落，使用格式化内容
+                        first_para = cell.paragraphs[0]
+                        first_para.clear()
+                        self._process_inline_content(
+                            first_para,
+                            cell_node.get('content', ''),
+                            segments
+                        )
                         if align == 'center':
-                            para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            first_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                         elif align == 'right':
-                            para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                        for run in para.runs:
-                            run.font.name = self.font
-                            run.font.size = Pt(self.font_size)
-                            run.element.rPr.rFonts.set(qn('w:eastAsia'), self.font)
+                            first_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        for run in first_para.runs:
+                            if not run.font.name:
+                                run.font.name = self.font
+                                run.font.size = Pt(self.font_size)
+                                run.element.rPr.rFonts.set(qn('w:eastAsia'), self.font)
+                    else:
+                        cell.text = cell_node.get('content', '')
+                        for para in cell.paragraphs:
+                            if align == 'center':
+                                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            elif align == 'right':
+                                para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                            for run in para.runs:
+                                run.font.name = self.font
+                                run.font.size = Pt(self.font_size)
+                                run.element.rPr.rFonts.set(qn('w:eastAsia'), self.font)
 
     def _add_code_block(self, node: Dict[str, Any]):
         """
@@ -749,3 +831,91 @@ class WordConverter(BaseConverter):
                         run = para.add_run(content)
                         run.font.name = self.font
                         run.font.size = Pt(9)
+
+    def _add_math_block(self, node: Dict[str, Any]):
+        """
+        添加块级数学公式
+
+        Args:
+            node: 数学公式节点
+        """
+        content = node.get('content', '')
+
+        para = self.doc.add_paragraph()
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        para.paragraph_format.space_before = Pt(6)
+        para.paragraph_format.space_after = Pt(6)
+
+        # 浅蓝底色框
+        pPr = para._p.get_or_add_pPr()
+        shd = OxmlElement('w:shd')
+        shd.set(qn('w:val'), 'clear')
+        shd.set(qn('w:color'), 'auto')
+        shd.set(qn('w:fill'), 'F0F4FF')
+        pPr.append(shd)
+
+        # 左边框标识
+        pBdr = OxmlElement('w:pBdr')
+        left = OxmlElement('w:left')
+        left.set(qn('w:val'), 'single')
+        left.set(qn('w:sz'), '12')
+        left.set(qn('w:space'), '8')
+        left.set(qn('w:color'), '4472C4')
+        pBdr.append(left)
+        pPr.append(pBdr)
+
+        run = para.add_run(content)
+        run.font.name = 'Cambria Math'
+        run.font.size = Pt(self.font_size)
+        run.font.italic = True
+
+    def _add_math_inline_para(self, node: Dict[str, Any]):
+        """块级回退处理内联数学公式"""
+        content = node.get('content', '')
+        para = self.doc.add_paragraph()
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = para.add_run(f'${content}$')
+        run.font.name = 'Cambria Math'
+        run.font.size = Pt(self.font_size)
+        run.font.italic = True
+        shading = OxmlElement('w:shd')
+        shading.set(qn('w:val'), 'clear')
+        shading.set(qn('w:color'), 'auto')
+        shading.set(qn('w:fill'), 'F0F4FF')
+        run.element.rPr.append(shading)
+
+    def _add_definition_list(self, node: Dict[str, Any]):
+        """
+        添加定义列表
+
+        Args:
+            node: 定义列表节点
+        """
+        items = node.get('children', [])
+        for item in items:
+            # 术语：粗体
+            terms = item.get('terms', [])
+            term_texts = []
+            for term in terms:
+                term_texts.append(term.get('content', ''))
+            if term_texts:
+                term_para = self.doc.add_paragraph()
+                term_para.paragraph_format.space_after = Pt(2)
+                term_para.paragraph_format.left_indent = Cm(1)
+                run = term_para.add_run('; '.join(term_texts))
+                run.font.bold = True
+                run.font.name = self.font
+                run.font.size = Pt(self.font_size)
+                run.element.rPr.rFonts.set(qn('w:eastAsia'), self.font)
+
+            # 定义：缩进
+            desc = item.get('description', {})
+            desc_content = desc.get('content', '')
+            if desc_content:
+                desc_para = self.doc.add_paragraph()
+                desc_para.paragraph_format.left_indent = Cm(2)
+                desc_para.paragraph_format.space_after = Pt(8)
+                run = desc_para.add_run(desc_content)
+                run.font.name = self.font
+                run.font.size = Pt(self.font_size)
+                run.element.rPr.rFonts.set(qn('w:eastAsia'), self.font)

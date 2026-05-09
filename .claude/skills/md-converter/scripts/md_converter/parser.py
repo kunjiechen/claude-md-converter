@@ -6,6 +6,8 @@ Markdown解析器
 from typing import Any, Dict, List, Optional
 from markdown_it import MarkdownIt
 from mdit_py_plugins.footnote import footnote_plugin
+from mdit_py_plugins.texmath import texmath_plugin
+from mdit_py_plugins.deflist import deflist_plugin
 
 
 class MarkdownParser:
@@ -22,6 +24,10 @@ class MarkdownParser:
         self.md.enable('strikethrough')
         # 启用脚注支持
         self.md.use(footnote_plugin)
+        # 启用数学公式支持
+        self.md.use(texmath_plugin)
+        # 启用定义列表支持
+        self.md.use(deflist_plugin)
 
     def parse(self, text: str) -> List[Dict[str, Any]]:
         """
@@ -87,9 +93,11 @@ class TokenConverter:
         handler = getattr(self, f'_handle_{token.type}', None)
         if handler:
             return handler(token)
-        # 跳过脚注块（单独处理）
+        # 跳过不独立处理的token类型
         if token.type in ('footnote_block_open', 'footnote_block_close',
-                          'footnote_open', 'footnote_close', 'footnote_anchor'):
+                          'footnote_open', 'footnote_close', 'footnote_anchor',
+                          'math_block_eqno',
+                          'dl_close', 'dt_open', 'dt_close', 'dd_open', 'dd_close'):
             return None
         return None
 
@@ -363,6 +371,7 @@ class TokenConverter:
         """处理表格单元格"""
         content = ""
         align = ""
+        children = []
         if open_token and open_token.attrs:
             style = open_token.attrs.get("style", "")
             if "text-align:" in style:
@@ -374,11 +383,18 @@ class TokenConverter:
                 break
             elif token.type == "inline":
                 content = token.content
+                segments = self._parse_inline_segments(token)
+                has_formatting = any(
+                    s.get("type") != "text" or s.get("bold") or s.get("italic") or s.get("strikethrough")
+                    for s in segments
+                )
+                if has_formatting or len(segments) > 1:
+                    children = segments
             self.pos += 1
         return {
             "type": NODE_TABLE_CELL,
             "content": content,
-            "children": [],
+            "children": children,
             "attributes": {"align": align}
         }
 
@@ -434,13 +450,85 @@ class TokenConverter:
 
     def _handle_hr(self, token) -> Dict[str, Any]:
         """处理分割线"""
-        # token参数用于接口一致性
         return {
             "type": NODE_HR,
             "content": "",
             "children": [],
             "attributes": {}
         }
+
+    def _handle_math_block(self, token) -> Dict[str, Any]:
+        """处理块级数学公式"""
+        return {
+            "type": NODE_MATH_BLOCK,
+            "content": token.content,
+            "children": [],
+            "attributes": {}
+        }
+
+    def _handle_math_inline(self, token) -> Dict[str, Any]:
+        """处理内联数学公式（块级回退）"""
+        return {
+            "type": NODE_MATH_INLINE,
+            "content": token.content,
+            "children": [],
+            "attributes": {}
+        }
+
+    def _handle_dl_open(self, token) -> Dict[str, Any]:
+        """处理定义列表"""
+        items = []
+        self.pos += 1
+        current_terms = []
+        while self.pos < len(self.tokens):
+            token = self.tokens[self.pos]
+            if token.type == "dl_close":
+                break
+            elif token.type == "dt_open":
+                term = self._process_dt()
+                if term:
+                    current_terms.append(term)
+            elif token.type == "dd_open":
+                desc = self._process_dd()
+                if desc:
+                    items.append({
+                        "terms": list(current_terms),
+                        "description": desc
+                    })
+                    current_terms = []
+            self.pos += 1
+        return {
+            "type": NODE_DEF_LIST,
+            "content": "",
+            "children": items,
+            "attributes": {}
+        }
+
+    def _process_dt(self) -> Optional[Dict[str, Any]]:
+        """处理定义术语"""
+        content = ""
+        self.pos += 1
+        while self.pos < len(self.tokens):
+            token = self.tokens[self.pos]
+            if token.type == "dt_close":
+                break
+            elif token.type == "inline":
+                content = token.content
+            self.pos += 1
+        return {"content": content}
+
+    def _process_dd(self) -> Optional[Dict[str, Any]]:
+        """处理定义描述"""
+        content = ""
+        self.pos += 1
+        while self.pos < len(self.tokens):
+            token = self.tokens[self.pos]
+            if token.type == "dd_close":
+                break
+            elif token.type == "inline":
+                content = token.content
+            self.pos += 1
+        return {"content": content}
 
     def _parse_inline_segments(self, token) -> List[Dict[str, Any]]:
         """
@@ -514,8 +602,58 @@ class TokenConverter:
                 segments.append({"type": "softbreak"})
             elif child.type == "hardbreak":
                 segments.append({"type": "hardbreak"})
+            elif child.type == "math_inline":
+                segments.append({"type": "math_inline", "content": child.content})
+            elif child.type == "html_inline":
+                segments.extend(self._parse_html_inline(child.content))
 
         return self._merge_link_segments(segments)
+
+    def _parse_html_inline(self, raw_html: str) -> List[Dict[str, Any]]:
+        """解析HTML内联标签为结构化段"""
+        import re
+        segments = []
+        remaining = raw_html
+        patterns = [
+            (r'<kbd>(.*?)</kbd>', 'kbd'),
+            (r'<sub>(.*?)</sub>', 'sub'),
+            (r'<sup>(.*?)</sup>', 'sup'),
+            (r'<mark>(.*?)</mark>', 'highlight'),
+            (r'<del>(.*?)</del>', 'strikethrough_text'),
+            (r'<ins>(.*?)</ins>', 'underline_text'),
+            (r'<u>(.*?)</u>', 'underline_text'),
+            (r'<em>(.*?)</em>', 'italic_text'),
+            (r'<strong>(.*?)</strong>', 'bold_text'),
+            (r'<code>(.*?)</code>', 'code_inline'),
+            (r'<br\s*/?>', 'hardbreak'),
+        ]
+        for pattern, seg_type in patterns:
+            parts = re.split(pattern, remaining, flags=re.DOTALL)
+            new_remaining = []
+            for idx, part in enumerate(parts):
+                if idx % 2 == 0:
+                    # 非匹配部分
+                    if part.strip():
+                        new_remaining.append(part)
+                else:
+                    # 匹配的标签内容
+                    if seg_type == 'hardbreak':
+                        segments.append({"type": "hardbreak"})
+                    elif seg_type == 'strikethrough_text':
+                        segments.append({"type": "text", "content": part, "bold": False, "italic": False, "strikethrough": True})
+                    elif seg_type == 'underline_text':
+                        segments.append({"type": "text", "content": part, "bold": False, "italic": False, "strikethrough": False, "underline": True})
+                    elif seg_type == 'italic_text':
+                        segments.append({"type": "text", "content": part, "bold": False, "italic": True, "strikethrough": False})
+                    elif seg_type == 'bold_text':
+                        segments.append({"type": "text", "content": part, "bold": True, "italic": False, "strikethrough": False})
+                    else:
+                        segments.append({"type": seg_type, "content": part})
+            remaining = ''.join(new_remaining)
+        # 剩余纯文本
+        if remaining.strip():
+            segments.insert(0, {"type": "text", "content": remaining.strip()})
+        return segments
 
     def _merge_link_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """将link_start/link_end之间的段合并为单个link节点"""
@@ -582,6 +720,9 @@ NODE_LINK = "link"
 NODE_STRONG = "strong"
 NODE_EM = "em"
 NODE_HR = "hr"
+NODE_MATH_BLOCK = "math_block"
+NODE_MATH_INLINE = "math_inline"
+NODE_DEF_LIST = "definition_list"
 
 
 class MarkdownNode:

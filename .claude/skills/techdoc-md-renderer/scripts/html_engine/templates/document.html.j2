@@ -1,0 +1,22 @@
+{% extends "base.html.j2" %}
+
+{% block cover %}
+{% if cover_html %}
+<div class="cover">
+{{ cover_html }}
+</div>
+{% else %}
+<div class="cover">
+{% if company %}<p class="cover-company">{{ company }}</p>{% endif %}
+<h1 class="cover-title">{{ title }}</h1>
+{% if number %}<p class="cover-meta">文件编号：{{ number }}</p>{% endif %}
+{% if version %}<p class="cover-meta">版本：{{ version }}</p>{% endif %}
+{% if department %}<p class="cover-meta">制定部门：{{ department }}</p>{% endif %}
+{% if date %}<p class="cover-meta">日期：{{ date }}</p>{% endif %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block body %}
+{{ body_html }}
+{% endblock %}

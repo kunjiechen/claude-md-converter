@@ -1,0 +1,138 @@
+/* 技术文档专用样式 — G-C045 规范 */
+
+/* 表格 */
+table.table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-table);
+    font-size: var(--font-size-table);
+    margin: var(--spacing-block) 0;
+    page-break-inside: avoid;
+}
+
+table.table thead th {
+    background: var(--color-bg-table-header);
+    font-weight: bold;
+    text-align: center;
+    vertical-align: middle;
+    border: var(--table-border);
+    padding: var(--table-cell-padding);
+    text-indent: var(--table-text-indent);
+}
+
+table.table tbody td {
+    border: var(--table-border);
+    padding: var(--table-cell-padding);
+    text-indent: var(--table-text-indent);
+    vertical-align: middle;
+}
+
+/* 表格列对齐 */
+table.table td.align-left,
+table.table th.align-left {
+    text-align: left;
+}
+table.table td.align-center,
+table.table th.align-center {
+    text-align: center;
+}
+table.table td.align-right,
+table.table th.align-right {
+    text-align: right;
+}
+
+/* 修订记录表 */
+table.table--revision {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-table);
+    font-size: var(--font-size-table);
+}
+table.table--revision thead th,
+table.table--revision tbody td {
+    border: var(--table-border);
+    padding: var(--table-cell-padding);
+    text-indent: var(--table-text-indent);
+    vertical-align: middle;
+}
+table.table--revision thead th {
+    background: var(--color-bg-table-header);
+    font-weight: bold;
+}
+
+/* 目录 */
+.toc {
+    margin: var(--spacing-block) 0;
+}
+.toc-title {
+    font-family: var(--font-heading);
+    font-size: var(--font-size-h2);
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 12pt;
+}
+.toc-list {
+    list-style: none;
+    padding: 0;
+}
+.toc-list li {
+    padding: 2px 0;
+}
+.toc-list a {
+    color: var(--color-text);
+    text-decoration: none;
+}
+.toc-list a::after {
+    content: leader(".") target-counter(attr(href), page);
+}
+
+/* 封面 */
+.cover {
+    text-align: center;
+    padding-top: 30%;
+    page-break-after: always;
+}
+.cover .cover-title {
+    font-family: var(--font-heading);
+    font-size: 26pt;
+    font-weight: bold;
+    margin-bottom: 24pt;
+}
+.cover .cover-meta {
+    font-size: var(--font-size-body);
+    margin: 8pt 0;
+}
+
+/* 修订记录页 */
+.revision-section {
+    page-break-after: always;
+}
+.revision-section .revision-title {
+    font-family: var(--font-heading);
+    font-size: var(--font-size-h2);
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 12pt;
+}
+
+/* 列表 */
+.list {
+    margin: 4px 0 8px 0;
+    padding-left: 2em;
+}
+.list li {
+    margin-bottom: 2px;
+}
+
+/* 打印样式 */
+@media print {
+    body {
+        padding: 0;
+    }
+    .page-break {
+        page-break-after: always;
+    }
+    .no-break {
+        page-break-inside: avoid;
+    }
+}

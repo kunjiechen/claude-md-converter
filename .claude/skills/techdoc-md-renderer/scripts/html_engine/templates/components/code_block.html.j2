@@ -1,0 +1,4 @@
+<div class="code-block">
+{% if language %}<span class="code-lang">{{ language }}</span>{% endif %}
+<pre><code{% if language %} class="language-{{ language }}"{% endif %}>{{ content }}</code></pre>
+</div>

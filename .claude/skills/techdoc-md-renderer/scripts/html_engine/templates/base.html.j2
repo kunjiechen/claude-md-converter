@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="{{ lang | default('zh-CN') }}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="{{ meta_viewport | default('width=device-width, initial-scale=1.0') }}">
+<meta name="generator" content="md-converter">
+{% if number %}<meta name="doc-number" content="{{ number }}">{% endif %}
+{% if version %}<meta name="doc-version" content="{{ version }}">{% endif %}
+{% if department %}<meta name="doc-department" content="{{ department }}">{% endif %}
+{% if company %}<meta name="doc-company" content="{{ company }}">{% endif %}
+{% if date %}<meta name="doc-date" content="{{ date }}">{% endif %}
+<title>{{ title | default('技术文档') }}</title>
+{{ theme_css }}
+</head>
+<body>
+
+{% block cover %}{% endblock %}
+
+{% if toc_html %}
+<section class="toc page-break">
+<h2 class="toc-title">目录</h2>
+{{ toc_html }}
+</section>
+{% endif %}
+
+{% if revision_html %}
+<section class="revision-section page-break">
+{{ revision_html }}
+</section>
+{% endif %}
+
+<main class="document-body">
+{% block body %}{{ body_html }}{% endblock %}
+</main>
+
+{% block footer %}{% endblock %}
+
+{% if flowcharts %}
+{% for fc in flowcharts %}
+<!-- flowchart {{ fc.id }}: {{ fc.mime }} -->
+{% endfor %}
+{% endif %}
+</body>
+</html>

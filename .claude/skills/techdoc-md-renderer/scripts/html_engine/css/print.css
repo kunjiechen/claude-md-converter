@@ -1,0 +1,55 @@
+/* 打印/PDF 专用样式 */
+
+@page {
+    size: A4;
+    margin: 2.5cm;
+    @bottom-center {
+        content: counter(page);
+        font-family: var(--font-body);
+        font-size: 9pt;
+        color: var(--color-figcaption);
+    }
+}
+
+@page :first {
+    @bottom-center {
+        content: none;
+    }
+}
+
+body {
+    max-width: none;
+    padding: 0;
+}
+
+h1, h2, h3, h4 {
+    page-break-after: avoid;
+}
+
+table.table {
+    page-break-inside: avoid;
+}
+
+.code-block {
+    page-break-inside: avoid;
+}
+
+.flowchart, .image {
+    page-break-inside: avoid;
+}
+
+figure {
+    page-break-inside: avoid;
+}
+
+.cover {
+    page-break-after: always;
+}
+
+.toc {
+    page-break-after: always;
+}
+
+.revision-section {
+    page-break-after: always;
+}

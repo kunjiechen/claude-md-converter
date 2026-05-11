@@ -163,16 +163,15 @@ pie         # 饼图
 claude-md-converter/
 ├── .claude/
 │   └── skills/
-│       └── md-converter.md
+│       └── techdoc-md-renderer/
+│           └── SKILL.md
 ├── src/
 │   └── md_converter/
 │       ├── __init__.py
 │       ├── parser.py
-│       ├── converter.py
-│       ├── word_converter.py
-│       ├── pdf_converter.py
-│       ├── flowchart_renderer.py
-│       ├── flowchart_painter.py
+│       ├── [已删除] 旧版 converter/word/pdf_converter
+│       ├── flowchart/              # 流程图子系统
+│       ├── exporters/              # 导出器层（html/word/pdf）
 │       ├── batch_processor.py
 │       └── cli.py
 ├── verification/
@@ -204,8 +203,8 @@ click>=8.0.0
 pip install -e .
 
 # 使用
-md-converter input.md --format=word
-md-converter ./docs --format=pdf --output=./output
+techdoc-md-renderer input.md --format=word
+techdoc-md-renderer ./docs --format=pdf --output=./output
 ```
 
 ## 预计总时间：10-15天
@@ -338,7 +337,7 @@ md-converter ./docs --format=pdf --output=./output
 **当前状态：PDF功能默认关闭**
 - **关闭原因**：等待Word功能调试完成后再开启
 - **启用方式**：使用 `--enable-pdf` 参数启用
-- **示例**：`md-converter input.md --format pdf --enable-pdf`
+- **示例**：`techdoc-md-renderer input.md --format pdf --enable-pdf`
 - **配置位置**：cli.py 中的 `--enable-pdf` 参数
 
 ### 第四阶段补充：流程图/图表支持 ✅ 已完成
@@ -815,13 +814,96 @@ Word模板功能已完整实现：
 - `word_converter.py`：`_resolve_template_path()` 三级优先级；`_safe_style()` 样式降级；`_replace_header_fields()` 页眉替换；所有 `_add_*` 方法支持模板样式
 
 ## 下一步行动
-## 下一步行动
-1. **当前重点**：完成第八阶段剩余格式元素调试
-   - ~~第七阶段（10项全部完成）~~ ✅
-   - 第一批：表格单元格内联格式 + LaTeX/数学公式（高优先级）
-   - 第二批：HTML内联元素 + PDF内联格式 + 定义列表
-   - 第三批：嵌套引用块缩进 + highlight高亮
-   - 第四批：Word原生脚注 + 非flowchart图表 + 高级Word功能
-2. 可选：模板支持完整实现
+1. **当前重点**：架构重构 — 统一HTML渲染层
+2. 已完成格式元素调试
 3. 可选：发布到PyPI
 4. 可选：添加CI/CD配置
+
+---
+
+## 第十阶段：架构重构 — 统一HTML渲染层
+
+### 背景
+当前架构 Markdown → python-docx → Word 存在样式控制困难、代码耦合、无法复用等问题。重构目标是将 HTML 作为统一中间渲染层，所有输出格式（Word/PDF/在线预览）都基于同一份 HTML 生成。
+
+### 目标架构
+```
+Markdown → AST → HTML 渲染引擎 → 语义化 HTML
+                                    ├── Word 导出器 (HTML→docx)
+                                    ├── PDF 导出器  (HTML→PDF)
+                                    └── 在线预览    (纯HTML)
+```
+
+详细设计见 [architecture_design.md](architecture_design.md)。
+
+### 阶段 1: HTML 渲染引擎 ✅ 已完成
+
+| # | 内容 | 状态 |
+|---|------|------|
+| 1.1 | 新建 `html_engine/` 目录结构 | ✅ 已完成 |
+| 1.2 | 实现 AST → HTML 主渲染器 `renderer.py` | ✅ 已完成 |
+| 1.3 | 实现内联格式段渲染 `inline_renderer.py` | ✅ 已完成 |
+| 1.4 | 实现基础 CSS 样式表 (tokens + base + components + tech_doc) | ✅ 已完成 |
+| 1.5 | 实现 Jinja2 模板 (base + document + components) | ✅ 已完成 |
+| 1.6 | 实现主题基类 + TechDoc 主题 | ✅ 已完成 |
+| 1.7 | 新增 CLI `--format html` | ✅ 已完成 |
+| 1.8 | 自动目录生成（从标题节点） | ✅ 已完成 |
+| 1.9 | 架构设计文档 | ✅ 已完成 |
+
+**额外修复：**
+- TOC 目录表误检：移除基于列模式的不可靠试探，仅保留显式「目录」关键词检测，新增从标题自动生成目录
+- `word_converter.py` 同步修复 TOC 检测逻辑
+
+### 阶段 2: Word 通过 HTML 导出 ✅ 已完成
+
+| # | 内容 | 状态 |
+|---|------|------|
+| 2.1 | HTML → docx 基础转换（标题/段落/列表/代码块/引用/图片/公式/定义列表/hr） | ✅ 已完成 |
+| 2.2 | CSS → Word 样式映射（style_mapper.py：CSS class → Word 样式/格式） | ✅ 已完成 |
+| 2.3 | HTML 表格 → docx 表格（thead/tbody/th/td/对齐/边框/灰底表头/列宽） | ✅ 已完成 |
+| 2.4 | 页眉/页脚支持（模板加载/页眉字段替换/模板修订表保留） | ✅ 已完成 |
+| 2.5 | TOC & 修订记录（Word 原生 TOC 字段 + 默认修订表生成） | ✅ 已完成 |
+| 2.6 | CLI 新链路 + `--legacy` 回退（batch_processor 默认走新链路，--legacy 走旧版） | ✅ 已完成 |
+
+**新增文件：**
+- `exporters/word/__init__.py`
+- `exporters/word/exporter.py` — HTML → python-docx（~450 行）
+- `exporters/word/style_mapper.py` — CSS class → Word 样式映射
+
+**修改文件：**
+- `batch_processor.py` — Word 格式默认使用 `WordExporter`，旧版通过 `--legacy` 切换
+- `cli.py` — 新增 `--legacy` 参数
+- `requirements.txt` — 新增 `beautifulsoup4>=4.12`、`Jinja2>=3.0`
+
+### 阶段 3: PDF 导出器 (HTML→weasyprint) ✅ 已完成
+
+| # | 内容 | 状态 |
+|---|------|------|
+| 3.1 | 创建 `exporters/pdf/exporter.py` — PdfExporter 类 | ✅ 已完成 |
+| 3.2 | 复用 HTML 渲染引擎 + Jinja2 模板生成完整 HTML | ✅ 已完成 |
+| 3.3 | 集成 print.css（@page 规则、分页控制） | ✅ 已完成 |
+| 3.4 | weasyprint HTML → PDF 转换 | ✅ 已完成 |
+| 3.5 | 接入 batch_processor（--format pdf） | ✅ 已完成 |
+| 3.6 | 移除 --enable-pdf 强制开关 | ✅ 已完成 |
+
+**实现细节：**
+- PdfExporter 与 HtmlExporter/WordExporter 共享同一渲染管道（AST → HtmlRenderer → Jinja2 → 完整 HTML）
+- 自动注入 `print.css` 到主题 CSS 中，提供 @page（A4/边距/页码）、分页控制（h1-h4 不孤行、表格/代码块不分页）
+- 流程图 base64 图片在 weasyprint 中原生支持
+- weasyprint 未安装时给出明确错误提示
+
+**新增文件：**
+- `exporters/pdf/__init__.py`
+- `exporters/pdf/exporter.py` — HTML → PDF（weasyprint）
+
+**修改文件：**
+- `batch_processor.py` — PDF 格式使用 PdfExporter（替代旧 PDFConverterReportlab）
+- `cli.py` — 移除 --enable-pdf 强制开关
+
+### 阶段 4-5
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| 3 | PDF 统一 (HTML→weasyprint) | ✅ 已完成 |
+| 4 | 主题系统完善 & 旧代码清理 | ✅ 已完成 |
+| 5 | 在线预览 & 知识库支持 | pending |

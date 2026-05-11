@@ -1,0 +1,62 @@
+/* 组件样式：代码块、引用、定义列表 */
+
+/* 代码块 */
+.code-block {
+    margin: var(--spacing-block) 0;
+    background: var(--color-bg-code);
+    border: 1px solid var(--color-border-light);
+    border-radius: 4px;
+    overflow-x: auto;
+    page-break-inside: avoid;
+}
+.code-block .code-lang {
+    display: block;
+    font-size: var(--font-size-footnote);
+    color: var(--color-figcaption);
+    padding: 2px 12px;
+    background: #E8E8E8;
+    border-bottom: 1px solid var(--color-border-light);
+}
+.code-block pre {
+    margin: 0;
+    padding: 10px 12px;
+    font-family: var(--font-code);
+    font-size: var(--font-size-code);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* 引用块 */
+.blockquote {
+    margin: var(--spacing-block) 0;
+    padding: 8px 16px;
+    border-left: 4px solid var(--color-border-light);
+    color: var(--color-text-secondary);
+}
+.blockquote p {
+    margin: 4px 0;
+}
+
+/* 定义列表 */
+.definition-list {
+    margin: var(--spacing-block) 0;
+}
+.definition-list dt {
+    font-weight: bold;
+    margin-top: 8pt;
+}
+.definition-list dd {
+    margin-left: 2em;
+    margin-bottom: 8pt;
+}
+
+/* Mermaid 图表 */
+pre.mermaid {
+    background: #FAFAFA;
+    border: 1px solid var(--color-border-light);
+    padding: 12px;
+    font-family: var(--font-code);
+    font-size: var(--font-size-code);
+    white-space: pre-wrap;
+}

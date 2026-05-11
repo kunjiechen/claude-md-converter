@@ -37,9 +37,14 @@ version: 0.1.0
 | `input` | 输入文件或目录路径（必需） | - |
 | `--format` / `-f` | 输出格式：`word` / `pdf` | `word` |
 | `--output` / `-o` | 输出文件或目录路径 | 同输入目录 |
-| `--template` / `-t` | Word模板文件(.dotx) 或 CSS模板(.css) | 无 |
-| `--font` | 默认字体 | 宋体 |
-| `--font-size` | 默认字号 | 12 |
+| `--template` / `-t` | Word模板(.docx/.dotx) 或 CSS模板(.css) | 内置G-C045模板 |
+| `--doc-title` | 文档标题（替换页眉） | - |
+| `--doc-number` | 文件编号（替换页眉） | - |
+| `--doc-version` | 版本号（替换页眉） | - |
+| `--doc-department` | 制定部门（替换页眉） | - |
+| `--doc-company` | 公司名称（替换页眉） | - |
+| `--font` | 默认字体（仅无模板时生效） | 宋体 |
+| `--font-size` | 默认字号（仅无模板时生效） | 12 |
 | `--enable-pdf` | 启用PDF转换（默认关闭） | `false` |
 | `--verbose` / `-v` | 详细输出 | `false` |
 
@@ -53,8 +58,17 @@ version: 0.1.0
 以下示例中 `$SKILL_DIR` 代表 skill 的 base directory，实际执行时替换为触发时提供的路径。
 
 ```bash
-# 单文件转Word
+# 单文件转Word（自动使用内置G-C045公司模板）
 PYTHONPATH=$SKILL_DIR/scripts python -m md_converter.cli report.md --format word
+
+# 使用自定义模板并替换页眉字段
+PYTHONPATH=$SKILL_DIR/scripts python -m md_converter.cli report.md \
+    --template my_template.docx \
+    --doc-title "需求规格说明书" \
+    --doc-number "REQ-001" \
+    --doc-version "V1.0" \
+    --doc-department "开发部" \
+    --doc-company "上海XX科技有限公司"
 
 # 指定输出路径
 PYTHONPATH=$SKILL_DIR/scripts python -m md_converter.cli report.md -o output/report.docx
@@ -62,9 +76,15 @@ PYTHONPATH=$SKILL_DIR/scripts python -m md_converter.cli report.md -o output/rep
 # 批量转换目录
 PYTHONPATH=$SKILL_DIR/scripts python -m md_converter.cli ./docs --format word --output ./output
 
-# 使用自定义字体
+# 使用自定义字体（仅无模板时生效）
 PYTHONPATH=$SKILL_DIR/scripts python -m md_converter.cli report.md --font "微软雅黑" --font-size 14
 ```
+
+### 模板加载优先级
+1. CLI `--template` 显式指定
+2. `templates/` 目录下第一个 `.docx` 文件
+3. 内置默认模板（G-C045 公司模板）
+4. 无模板时回退硬编码格式（向后兼容）
 
 ## Constraints
 

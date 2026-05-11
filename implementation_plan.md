@@ -246,10 +246,11 @@ md-converter ./docs --format=pdf --output=./output
    - 影响：富文本表格转换后格式错误
    - 缓解方案：parser提取cell segments + word_converter逐段添加
 
-6. **模板支持未实现**
-   - 风险：模板功能仅为接口预留
-   - 影响：无法满足企业定制需求
-   - 缓解方案：后续版本实现
+6. **模板支持** ✅ 已完成
+   - 三级模板加载优先级（CLI > templates/ > 内置G-C045默认模板）
+   - 页眉字段动态替换（标题/编号/版本/日期/部门/公司）
+   - 样式自动降级机制
+   - 无模板回退兼容
 
 ### 低风险项
 
@@ -263,7 +264,7 @@ md-converter ./docs --format=pdf --output=./output
 ### 已知限制（当前）
 
 1. **PDF功能默认关闭**，需 `--enable-pdf` 参数启用；两个PDF转换器均无内联格式支持
-2. **模板支持**仅预留接口，样式覆盖机制未实现
+2. **模板支持** ✅ 已实现：三级加载优先级、页眉字段替换、样式降级、无模板回退
 3. **PlantUML**需依赖plantuml CLI或Kroki API，Python渲染器不支持
 4. **非flowchart图表**（时序图/甘特图/类图/状态图/饼图）仅支持mmdc CLI或Kroki API
 
@@ -595,7 +596,7 @@ Phase 7 的10个调试项已全部完成，以下是新识别出的待实现/待
 | 7 | ==highlight== 高亮语法 | 低 | ❌ 未实现 | parser.py + word_converter.py | 低 |
 | 8 | Word原生脚注 | 低 | ❌ 未实现 | word_converter.py | 中 |
 | 9 | 非flowchart图表Python渲染 | 低 | ❌ 未实现 | flowchart_painter.py | 高 |
-| 10 | 页眉/页脚/页码 | 低 | ❌ 未实现 | word_converter.py | 中 |
+| 10 | 页眉/页脚/页码 | 低 | ✅ 已完成 | word_converter.py + 模板 | 中 |
 | 11 | 目录(TOC) | 低 | ❌ 未实现 | word_converter.py | 低 |
 | 12 | 硬分页符 | 低 | ❌ 未实现 | word_converter.py + parser.py | 低 |
 
@@ -785,6 +786,35 @@ Phase 7 的10个调试项已全部完成，以下是新识别出的待实现/待
   └── 调试项12：硬分页符           → word_converter.py + parser.py
 ```
 
+### 第九阶段：模板功能实现 ✅ 已完成
+
+Word模板功能已完整实现：
+
+1. **三级模板加载优先级**
+   - CLI `--template` 显式指定
+   - `templates/` 目录自动选用首个 .docx
+   - 内置 `default_template.docx`（G-C045 公司模板）
+
+2. **页眉动态字段替换**
+   - CLI参数：`--doc-title` `--doc-number` `--doc-version` `--doc-department` `--doc-company`
+   - 自动替换模板页眉中的对应占位文本
+   - 日期自动使用当天日期
+
+3. **样式映射与降级**
+   - 使用模板的 Normal(楷体12pt)、Heading 1-4、Table Grid 等样式
+   - 模板缺失样式时自动降级：Heading 5→4、List Bullet→List Paragraph→Normal
+   - `_safe_style()` 方法统一处理样式回退
+
+4. **向后兼容**
+   - 未找到任何模板时，自动使用原有硬编码格式（宋体12pt）
+   - CLI `--font` / `--font-size` 参数在无模板时生效
+
+**涉及文件：**
+- `cli.py`：新增 `--doc-title/--doc-number/--doc-version/--doc-department/--doc-company` 参数；修复 template/css_template 键名不匹配
+- `converter.py`：传入页眉字段选项；修复 template_path 读取
+- `word_converter.py`：`_resolve_template_path()` 三级优先级；`_safe_style()` 样式降级；`_replace_header_fields()` 页眉替换；所有 `_add_*` 方法支持模板样式
+
+## 下一步行动
 ## 下一步行动
 1. **当前重点**：完成第八阶段剩余格式元素调试
    - ~~第七阶段（10项全部完成）~~ ✅

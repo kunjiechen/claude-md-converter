@@ -151,7 +151,7 @@ print("Hello World")
 ### 已完成（Word转换）
 - 标题 H1-H6、段落、粗体/斜体/删除线/粗斜体
 - 有序/无序列表、嵌套列表、任务列表（☑/☐）
-- 表格（Table Grid样式、列对齐）
+- 表格（Table Grid样式、列对齐、单元格内联格式）
 - 代码块（等宽字体+灰底+语言标签）
 - 引用块（左边框+缩进）
 - 超链接（蓝色下划线可点击）
@@ -160,6 +160,16 @@ print("Hello World")
 - 脚注（上标编号+文档末尾列表）
 - 流程图：Mermaid graph/flowchart 类型（Python/Pillow渲染器，遵循G-C110规范）
 - For循环/Switch Case流程图（专用布局+走线）
+- LaTeX数学公式（块级+内联，浅蓝底+蓝色左边框）
+- HTML内联元素（kbd/sub/sup/mark高亮）
+- 定义列表（术语粗体+定义缩进）
+
+### 已完成（Word模板功能）
+- **模板加载**：`--template` CLI参数指定；`templates/`目录自动选用；内置G-C045默认模板
+- **样式映射**：Normal(正文/楷体12pt)、Heading 1-4(标题)、Table Grid(表格)、List Bullet/Number(列表)
+- **页眉字段替换**：`--doc-title` `--doc-number` `--doc-version` `--doc-department` `--doc-company` 动态替换模板页眉
+- **样式降级**：模板无对应样式时自动回退（Heading 5→4→3、List Bullet→Normal等）
+- **无模板回退**：未加载模板时保持硬编码格式（宋体12pt），向后兼容
 
 ## 风险项与已知限制
 
@@ -187,10 +197,11 @@ print("Hello World")
    - 影响：部分Markdown扩展语法内容丢失
    - 缓解方案：在`_parse_inline_segments`中处理`html_inline` token类型；启用highlight插件
 
-5. **模板支持未实现**
-   - 风险：Word(.dotx)/PDF(CSS)模板功能仅为接口预留，样式覆盖机制未实现
-   - 影响：无法满足企业文档定制需求（页眉页脚、公司LOGO、自定义样式）
-   - 缓解方案：后续版本实现模板功能
+5. **模板支持** ✅ 已完成
+   - 三级加载优先级：CLI指定 > templates/目录 > 内置G-C045默认模板
+   - 页眉动态字段：文档标题、编号、版本、部门、公司名、日期
+   - 样式自动降级：模板缺失样式时自动回退到最接近可用样式
+   - 无模板回退：加载不到模板时保持原有硬编码格式（宋体12pt）
 
 6. **表格单元格无内联格式**
    - 风险：表格单元格内容以纯文本写入，单元格内的粗体、斜体、代码、链接等格式全部丢失
@@ -237,11 +248,11 @@ print("Hello World")
    - PDF模板(CSS)接口预留但未充分测试
    - 样式覆盖机制未实现
 
-3. **高级Word功能缺失**
-   - 页眉/页脚：未实现
-   - 目录(TOC)：未实现
+3. **高级Word功能**
+   - 页眉/页脚：✅ 已实现（通过模板页眉+字段替换）
+   - 目录(TOC)：✅ 模板已含TOC样式占位，Word中刷新即可
    - 硬分页符：未实现
-   - 页码：未实现
+   - 页码：模板页眉已含"第X页 共X页"，依赖Word自动更新
 
 4. **PlantUML在Python渲染器**
    - flowchart_painter.py仅解析Mermaid `graph`/`flowchart` 语法

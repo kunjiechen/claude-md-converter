@@ -19,8 +19,14 @@ class BaseConverter(ABC):
             **options: 转换选项
         """
         self.options = options
-        self.template_path: Optional[str] = options.get('template')
+        self.template_path: Optional[str] = options.get('template') or options.get('css_template')
         self.output_dir: Optional[str] = options.get('output_dir')
+        # 模板页眉动态字段
+        self.doc_title: Optional[str] = options.get('doc_title')
+        self.doc_number: Optional[str] = options.get('doc_number')
+        self.doc_version: Optional[str] = options.get('doc_version')
+        self.doc_department: Optional[str] = options.get('doc_department')
+        self.doc_company: Optional[str] = options.get('doc_company')
 
     @abstractmethod
     def convert(self, ast: List[Dict[str, Any]], output_path: str) -> bool:

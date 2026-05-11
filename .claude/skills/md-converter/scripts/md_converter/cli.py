@@ -45,7 +45,32 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
 
     parser.add_argument(
         '--template', '-t',
-        help='Word模板文件路径 (.dotx) 或 CSS模板文件路径 (.css)'
+        help='Word模板文件路径 (.docx/.dotx) 或 CSS模板文件路径 (.css)'
+    )
+
+    parser.add_argument(
+        '--doc-title',
+        help='文档标题（替换模板页眉中的标题占位）'
+    )
+
+    parser.add_argument(
+        '--doc-number',
+        help='文件编号（替换模板页眉中的编号占位）'
+    )
+
+    parser.add_argument(
+        '--doc-version',
+        help='版本号（替换模板页眉中的版本占位）'
+    )
+
+    parser.add_argument(
+        '--doc-department',
+        help='制定部门（替换模板页眉中的部门占位）'
+    )
+
+    parser.add_argument(
+        '--doc-company',
+        help='公司名称（替换模板页眉中的公司名占位）'
     )
 
     parser.add_argument(
@@ -128,7 +153,18 @@ def main(args: Optional[List[str]] = None):
     }
 
     if parsed_args.template:
+        options['template'] = parsed_args.template
         options['css_template'] = parsed_args.template
+    if parsed_args.doc_title:
+        options['doc_title'] = parsed_args.doc_title
+    if parsed_args.doc_number:
+        options['doc_number'] = parsed_args.doc_number
+    if parsed_args.doc_version:
+        options['doc_version'] = parsed_args.doc_version
+    if parsed_args.doc_department:
+        options['doc_department'] = parsed_args.doc_department
+    if parsed_args.doc_company:
+        options['doc_company'] = parsed_args.doc_company
 
     if parsed_args.output:
         options['output_dir'] = parsed_args.output

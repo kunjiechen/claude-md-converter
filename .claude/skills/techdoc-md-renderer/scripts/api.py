@@ -1,7 +1,16 @@
 """
 程序化 API — 统一的文档转换接口
 
-为 Agent / SDK 调用提供干净的编程入口，封装解析、渲染、导出全流程。
+@tool
+name: convert_document
+description: 将 Markdown 文件转换为 HTML/Word/PDF。统一 HTML 中间表示架构，
+             所有格式共享同一渲染管线。支持单文件和目录批量转换。
+when_to_use: preflight 检查通过后调用。用户指定目标格式时直接转换，
+             格式不明确时根据场景推断（手机→HTML, 老板→Word, 打印→PDF）。
+input: Markdown 文件路径, format ('word'|'html'|'pdf'), 可选参数 (doc_title,
+       doc_version, doc_company, theme, mermaid_render_mode, inline_images)
+output: ConversionResult (success, output_path, size_bytes, error)
+side_effect: 在输出目录生成 .html / .docx / .pdf 文件
 
 用法:
     from api import Converter
@@ -19,7 +28,6 @@ from pathlib import Path
 from typing import Optional, Union, List
 from dataclasses import dataclass, field
 
-from parser import MarkdownParser
 from exporters.html import HtmlExporter
 from exporters.word import WordExporter
 from exporters.pdf import PdfExporter
@@ -69,7 +77,7 @@ class Converter:
     def convert_file(
         self,
         input_path: Union[str, Path],
-        format: str = 'html',
+        format: str = '',
         output_path: Optional[Union[str, Path]] = None,
         **options,
     ) -> ConversionResult:
@@ -77,7 +85,7 @@ class Converter:
 
         Args:
             input_path: .md 文件路径
-            format: 输出格式 ('word' | 'html' | 'pdf')
+            format: 输出格式 ('word' | 'html' | 'pdf')，默认从构造函数继承
             output_path: 输出文件路径，为 None 时自动生成
             **options: 覆盖默认选项 (theme, mermaid_render_mode, inline_images, doc_title 等)
 
@@ -85,6 +93,7 @@ class Converter:
             ConversionResult 包含 success/error/output_path/size_bytes
         """
         input_path = Path(input_path)
+        format = format or self.default_options.get('format', 'html')
         merged = {**self.default_options, **options, 'format': format}
 
         try:
@@ -140,7 +149,7 @@ class Converter:
     def convert_directory(
         self,
         input_dir: Union[str, Path],
-        format: str = 'html',
+        format: str = '',
         output_dir: Optional[Union[str, Path]] = None,
         generate_index: bool = True,
         index_title: str = '文档索引',
@@ -162,6 +171,8 @@ class Converter:
             BatchConversionResult 包含每个文件的结果和可选的 index_path
         """
         start = time.time()
+
+        format = format or self.default_options.get('format', 'html')
 
         merged = {
             **self.default_options,

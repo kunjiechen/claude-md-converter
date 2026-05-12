@@ -12,8 +12,6 @@ import copy
 import base64
 import tempfile
 import os
-import io
-import zipfile
 
 try:
     import requests
@@ -28,7 +26,6 @@ from docx.shared import Inches, Pt, Cm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-from lxml import etree
 
 from parser import MarkdownParser
 from html_engine.renderer import HtmlRenderer
@@ -36,17 +33,9 @@ from html_engine.context import RenderContext
 from html_engine.themes import ThemeRegistry
 from flowchart import FlowchartProcessor
 from .style_mapper import StyleMapper, ALIGN_MAP
-
-
-# — 表格常量 —
-TABLE_FONT_WEST = 'Consolas'
-TABLE_FONT_EAST = 'Microsoft YaHei'
-TABLE_FONT_SIZE = Pt(10)
-TABLE_HEADER_BG = 'D9D9D9'
-TABLE_BORDER_COLOR = '808080'
-TABLE_BORDER_SIZE = 4
-TABLE_CELL_MARGIN = 40
-TABLE_TOTAL_WIDTH_CM = 16
+from .inline_processor import InlineProcessor
+from .table_builder import TableBuilder
+from .footnote_injector import FootnoteInjector
 
 
 class WordExporter:
@@ -80,10 +69,10 @@ class WordExporter:
         self._flowchart = FlowchartProcessor(**options)
         self._flowchart_counter = 0
 
-        # 脚注
-        self._footnote_counter = 0
-        self._footnote_defs: Dict[str, Dict] = {}  # label → {children, etc}
-        self._footnote_label_to_id: Dict[str, int] = {}  # label → numeric ID
+        # 子模块
+        self._inline_proc = InlineProcessor(self)
+        self._table_builder = TableBuilder(self)
+        self._footnote_injector = FootnoteInjector()
 
         # HTML 渲染器
         self._html_renderer = HtmlRenderer(flowchart_processor=self._flowchart, mermaid_render_mode='server')
@@ -101,9 +90,7 @@ class WordExporter:
         output_file = Path(output_path)
 
         # 0. 提取脚注定义并标记 label→ID 映射
-        self._footnote_defs.clear()
-        self._footnote_label_to_id.clear()
-        ast_clean = self._extract_footnotes_from_ast(ast)
+        ast_clean = self._footnote_injector.extract_from_ast(ast)
 
         # 1. 渲染 HTML（使用清理后的 AST，不含 footnote_block）
         context = RenderContext(
@@ -167,30 +154,16 @@ class WordExporter:
 
         # 6. 注入原生脚注并输出
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        if self._footnote_defs:
-            self._inject_native_footnotes(doc, str(output_file))
+        if self._footnote_injector.defs:
+            self._footnote_injector.inject_into_docx(doc, str(output_file))
         else:
             doc.save(str(output_file))
         self._log(f"Word文档已生成: {output_path}")
         return True
 
     def _extract_footnotes_from_ast(self, ast: List[Dict]) -> List[Dict]:
-        """从 AST 中提取脚注定义，返回去除 footnote_block 后的 AST"""
-        result = []
-        for node in ast:
-            if node.get('type') == 'footnote_block':
-                next_id = 1
-                for fn in node.get('children', []):
-                    label = fn.get('attributes', {}).get('label', '')
-                    if label:
-                        self._footnote_defs[label] = fn
-                        if label not in self._footnote_label_to_id:
-                            self._footnote_label_to_id[label] = next_id
-                            next_id += 1
-                # 不添加到 result（移除脚注块）
-            else:
-                result.append(node)
-        return result
+        """(deprecated) 委托给 FootnoteInjector"""
+        return self._footnote_injector.extract_from_ast(ast)
 
     def convert_file(self, input_path: str, output_path: Optional[str] = None) -> bool:
         """转换 Markdown 文件为 Word"""
@@ -355,7 +328,7 @@ class WordExporter:
             elif tag in ('ul', 'ol'):
                 self._add_list(element, doc, level=0)
             elif tag == 'table':
-                self._add_table(element, doc)
+                self._table_builder.build(element, doc)
             elif tag == 'div' and 'code-block' in element.get('class', []):
                 self._add_code_block(element, doc)
             elif tag == 'pre':
@@ -488,147 +461,6 @@ class WordExporter:
             for nested in li.find_all(['ul', 'ol'], recursive=False):
                 self._add_list(nested, doc, level + 1)
 
-    def _add_table(self, tag: Tag, doc: Document):
-        """添加表格"""
-        # 收集所有行
-        rows_data = []
-        has_thead = tag.find('thead') is not None
-        header_rows = []
-
-        # 处理 thead
-        thead = tag.find('thead')
-        if thead:
-            for tr in thead.find_all('tr', recursive=False):
-                cells = list(StyleMapper.cell_collector(tr, True))
-                if cells:
-                    header_rows.append(cells)
-
-        # 处理 tbody
-        tbody = tag.find('tbody') or tag
-        body_rows = []
-        for tr in tbody.find_all('tr', recursive=False):
-            # 跳过 thead 中的行
-            if has_thead and tr.parent and tr.parent.name == 'thead':
-                continue
-            is_header = (not has_thead and len(body_rows) == 0 and
-                         (tr.find('th') or StyleMapper.is_thead_row(tr)))
-            cells = list(StyleMapper.cell_collector(tr, is_header if not has_thead else False))
-            if cells:
-                body_rows.append(cells)
-
-        all_rows = header_rows + body_rows
-        if not all_rows:
-            return
-
-        col_count = max(len(r) for r in all_rows)
-
-        # 添加表格
-        table = doc.add_table(rows=len(all_rows), cols=col_count)
-        table_style_name = StyleMapper.get_table_style(tag)
-        if self._has_style(doc, table_style_name):
-            table.style = doc.styles[table_style_name]
-
-        # 设置边框和宽度
-        self._set_table_borders(table)
-
-        # 填充数据
-        for row_idx, row_data in enumerate(all_rows):
-            row = table.rows[row_idx]
-            is_header_row = row_idx < len(header_rows)
-            if not has_thead and row_idx == 0:
-                # 判断首行是否为表头（基于 th 标签或样式）
-                first_tag = tag.find_all('tr')[row_idx] if row_idx < len(tag.find_all('tr')) else None
-                is_header_row = bool(first_tag and first_tag.find('th'))
-
-            for col_idx, cell_data in enumerate(row_data):
-                if col_idx >= col_count:
-                    break
-                cell = row.cells[col_idx]
-                self._format_cell_html(cell, cell_data, is_header_row)
-
-    def _format_cell_html(self, cell, cell_data: dict, is_header: bool):
-        """格式化单个表格单元格"""
-        text = cell_data.get('text', '')
-        align_cls = cell_data.get('align')
-
-        tc = cell._tc
-        tcPr = self._ensure_element(tc, 'w:tcPr', first=True)
-
-        # 边距
-        old_mar = tcPr.find(qn('w:tcMar'))
-        if old_mar is not None:
-            tcPr.remove(old_mar)
-        tcMar = OxmlElement('w:tcMar')
-        for side, val in [('top', TABLE_CELL_MARGIN), ('left', TABLE_CELL_MARGIN + 20),
-                          ('bottom', TABLE_CELL_MARGIN), ('right', TABLE_CELL_MARGIN + 20)]:
-            m = OxmlElement(f'w:{side}')
-            m.set(qn('w:w'), str(val))
-            m.set(qn('w:type'), 'dxa')
-            tcMar.append(m)
-        tcPr.append(tcMar)
-
-        # 垂直居中
-        vAlign = self._ensure_element(tcPr, 'w:vAlign')
-        vAlign.set(qn('w:val'), 'center')
-
-        # 表头灰底
-        if is_header:
-            shd = self._ensure_element(tcPr, 'w:shd')
-            shd.set(qn('w:val'), 'clear')
-            shd.set(qn('w:color'), 'auto')
-            shd.set(qn('w:fill'), TABLE_HEADER_BG)
-
-        # 写入文本
-        para = cell.paragraphs[0]
-        para.clear()
-        run = para.add_run(text)
-        run.font.name = TABLE_FONT_WEST
-        run.font.size = TABLE_FONT_SIZE
-        run.element.rPr.rFonts.set(qn('w:eastAsia'), TABLE_FONT_EAST)
-        if is_header:
-            run.font.bold = True
-
-        # 对齐
-        if is_header or align_cls == 'align-center':
-            align = WD_ALIGN_PARAGRAPH.CENTER
-        elif align_cls == 'align-right':
-            align = WD_ALIGN_PARAGRAPH.RIGHT
-        else:
-            align = WD_ALIGN_PARAGRAPH.LEFT
-
-        for p in cell.paragraphs:
-            pPr = self._ensure_element(p._p, 'w:pPr', first=True)
-
-            # 零缩进
-            ind = pPr.find(qn('w:ind'))
-            if ind is not None:
-                pPr.remove(ind)
-            ind = OxmlElement('w:ind')
-            for attr in ['left', 'leftChars', 'right', 'rightChars', 'firstLine', 'firstLineChars', 'hanging', 'hangingChars']:
-                ind.set(qn(f'w:{attr}'), '0')
-            pPr.append(ind)
-
-            # 段间距
-            old_sp = pPr.find(qn('w:spacing'))
-            if old_sp is not None:
-                pPr.remove(old_sp)
-
-            # 对齐
-            jc = pPr.find(qn('w:jc'))
-            if jc is None:
-                jc = OxmlElement('w:jc')
-                pPr.append(jc)
-            jc.set(qn('w:val'), {WD_ALIGN_PARAGRAPH.CENTER: 'center',
-                                WD_ALIGN_PARAGRAPH.RIGHT: 'right',
-                                WD_ALIGN_PARAGRAPH.LEFT: 'left'}.get(align, 'left'))
-
-            for r in p.runs:
-                r.font.name = TABLE_FONT_WEST
-                r.font.size = TABLE_FONT_SIZE
-                r.element.rPr.rFonts.set(qn('w:eastAsia'), TABLE_FONT_EAST)
-                if is_header:
-                    r.font.bold = True
-
     def _add_code_block(self, tag: Tag, doc: Document):
         """添加代码块"""
         code_tag = tag.find('code') if tag.name != 'code' else tag
@@ -667,7 +499,7 @@ class WordExporter:
             elif name in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
                 self._add_heading(child, doc)
             elif name == 'table':
-                self._add_table(child, doc)
+                self._table_builder.build(child, doc)
             elif name == 'div' and 'code-block' in child.get('class', []):
                 self._add_code_block(child, doc)
             elif name == 'pre':
@@ -867,117 +699,17 @@ class WordExporter:
 
     def _process_inline_runs(self, para, tag: Tag):
         """递归处理 HTML 内联元素，生成 Word runs"""
-        self._render_inline_children(para, tag)
-
-    def _render_inline_children(self, para, element):
-        """递归渲染内联子元素"""
-        for child in element.children:
-            if isinstance(child, NavigableString):
-                text = str(child)
-                if text.strip() or text == ' ':
-                    para.add_run(text)
-            else:
-                self._render_single_inline(para, child)
+        self._inline_proc.process(para, tag)
 
     def _render_single_inline(self, para, element):
-        """渲染单个内联元素，支持嵌套格式叠加（如 <em><strong>）"""
-        name = element.name
-        if name is None:
-            return
+        """渲染单个内联元素（委托给 InlineProcessor）"""
+        self._inline_proc._render_single(para, element)
 
-        if name in ('strong', 'em', 'del', 'ins'):
-            self._render_nested_format(para, element, name)
-        elif name == 'code':
-            run = para.add_run(element.get_text())
-            run.font.name = 'Courier New'
-            run.font.size = Pt(10)
-            shd = self._ensure_element(run._r, 'w:rPr', first=True, use_inner=True)
-            shd_el = OxmlElement('w:shd')
-            shd_el.set(qn('w:val'), 'clear')
-            shd_el.set(qn('w:color'), 'auto')
-            shd_el.set(qn('w:fill'), 'F0F0F0')
-            shd.insert(0, shd_el)
-        elif name == 'a':
-            text = element.get_text()
-            href = element.get('href', '')
-            if href:
-                self._add_hyperlink(para, text, href)
-            else:
-                para.add_run(text)
-        elif name == 'kbd':
-            run = para.add_run(element.get_text())
-            run.font.name = 'Courier New'
-            run.font.size = Pt(9)
-        elif name == 'sub':
-            run = para.add_run(element.get_text())
-            run.font.subscript = True
-        elif name == 'sup':
-            classes = element.get('class', [])
-            if 'footnote-ref' in classes:
-                label = element.get_text().strip('[] \n')
-                self._add_footnote_reference(para, label)
-            else:
-                run = para.add_run(element.get_text())
-                run.font.superscript = True
-        elif name == 'mark':
-            run = para.add_run(element.get_text())
-            shd = self._ensure_element(run._r, 'w:rPr', first=True, use_inner=True)
-            shd_el = OxmlElement('w:shd')
-            shd_el.set(qn('w:val'), 'clear')
-            shd_el.set(qn('w:color'), 'auto')
-            shd_el.set(qn('w:fill'), 'FFFF00')
-            shd.insert(0, shd_el)
-        elif name == 'br':
-            para.add_run('\n')
-        elif name == 'img':
-            alt = element.get('alt', '[图片]')
-            para.add_run(f'[图片: {alt}]')
-        elif name == 'span':
-            classes = element.get('class', [])
-            if 'math' in classes:
-                # 内联公式：去除 \( \) 定界符，用 Cambria Math 斜体
-                text = element.get_text()
-                text = text.strip()
-                if text.startswith('\\('):
-                    text = text[2:]
-                if text.endswith('\\)'):
-                    text = text[:-2]
-                run = para.add_run(text.strip())
-                run.font.name = 'Cambria Math'
-                run.font.italic = True
-                run.font.size = Pt(11)
-            else:
-                self._render_inline_children(para, element)
-        elif name == 'input':
-            checked = element.get('checked')
-            para.add_run('☑ ' if checked is not None else '☐ ')
-        else:
-            t = element.get_text()
-            if t:
-                para.add_run(t)
+    def _add_footnote_reference(self, para, label: str):
+        """添加脚注引用（委托给 FootnoteInjector）"""
+        self._footnote_injector.add_reference(para, label)
 
-    _FORMAT_ATTR = {'strong': 'bold', 'em': 'italic', 'del': 'strike', 'ins': 'underline'}
-
-    def _render_nested_format(self, para, element, fmt_name):
-        """递归渲染 strong/em/del/ins，支持嵌套子元素叠加格式"""
-        attr = self._FORMAT_ATTR[fmt_name]
-        for child in element.children:
-            if isinstance(child, NavigableString):
-                t = str(child)
-                if t.strip() or t == ' ':
-                    run = para.add_run(t)
-                    setattr(run.font, attr, True)
-            elif child.name in self._FORMAT_ATTR:
-                self._render_nested_format(para, child, child.name)
-                if para.runs:
-                    setattr(para.runs[-1].font, attr, True)
-            else:
-                self._render_single_inline(para, child)
-                if para.runs:
-                    setattr(para.runs[-1].font, attr, True)
-
-    @staticmethod
-    def _add_hyperlink(para, text: str, url: str):
+    def _add_hyperlink(self, para, text: str, url: str):
         """添加超链接"""
         r_id = para.part.relate_to(url, 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink',
                                   is_external=True)
@@ -1117,7 +849,7 @@ class WordExporter:
             self._add_heading(heading_tag, doc)
 
         # 表格
-        self._add_table(table_tag, doc)
+        self._table_builder.build(table_tag, doc)
 
         # 尾部分页符（与正文分隔）
         pb_para = doc.add_paragraph()
@@ -1205,200 +937,6 @@ class WordExporter:
             else:
                 parent.append(child)
         return child
-
-    def _set_table_borders(self, table):
-        """设置表格边框（全边框 0.5pt 灰色）"""
-        tbl = table._tbl
-        tblPr = self._ensure_element(tbl, 'w:tblPr', first=True)
-
-        tblBorders = tblPr.find(qn('w:tblBorders'))
-        if tblBorders is not None:
-            tblPr.remove(tblBorders)
-
-        tblBorders = OxmlElement('w:tblBorders')
-        for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
-            border = OxmlElement(f'w:{border_name}')
-            border.set(qn('w:val'), 'single')
-            border.set(qn('w:sz'), str(TABLE_BORDER_SIZE))
-            border.set(qn('w:space'), '0')
-            border.set(qn('w:color'), TABLE_BORDER_COLOR)
-            tblBorders.append(border)
-        tblPr.append(tblBorders)
-
-        # 表格宽度
-        tblW = tblPr.find(qn('w:tblW'))
-        if tblW is None:
-            tblW = OxmlElement('w:tblW')
-            tblPr.append(tblW)
-        tblW.set(qn('w:w'), '9000')
-        tblW.set(qn('w:type'), 'dxa')
-
-    # ============================================================
-    # 原生脚注
-    # ============================================================
-
-    _WML_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
-    _XML_NS = 'http://www.w3.org/XML/1998/namespace'
-
-    def _add_footnote_reference(self, para, label: str):
-        """在段落末尾添加原生 Word 脚注引用"""
-        fid = self._footnote_label_to_id.get(label)
-        if fid is None:
-            # 未在定义中找到，回退到上标文本
-            run = para.add_run(f'[{label}]')
-            run.font.superscript = True
-            return
-
-        run = OxmlElement('w:r')
-        rPr = OxmlElement('w:rPr')
-        rStyle = OxmlElement('w:rStyle')
-        rStyle.set(qn('w:val'), 'FootnoteReference')
-        rPr.append(rStyle)
-        run.append(rPr)
-        footnoteRef = OxmlElement('w:footnoteReference')
-        footnoteRef.set(qn('w:id'), str(fid))
-        run.append(footnoteRef)
-        para._p.append(run)
-
-    def _build_footnotes_xml(self) -> bytes:
-        """构建 word/footnotes.xml 内容"""
-        w = self._WML_NS
-        nsmap = {
-            'w': w,
-            'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
-            'mc': 'http://schemas.openxmlformats.org/markup-compatibility/2006',
-            'wpc': 'http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas',
-        }
-        footnotes = etree.Element(f'{{{w}}}footnotes', nsmap=nsmap)
-
-        # 必须的分隔符脚注
-        for fid_val, ftype in [('-1', 'separator'), ('0', 'continuationSeparator')]:
-            fn = etree.SubElement(footnotes, f'{{{w}}}footnote')
-            fn.set(f'{{{w}}}id', fid_val)
-            if fid_val == '-1':
-                fn.set(f'{{{w}}}type', 'separator')
-            else:
-                fn.set(f'{{{w}}}type', 'continuationSeparator')
-            p = etree.SubElement(fn, f'{{{w}}}p')
-            pPr = etree.SubElement(p, f'{{{w}}}pPr')
-            spacing = etree.SubElement(pPr, f'{{{w}}}spacing')
-            spacing.set(f'{{{w}}}after', '0')
-            spacing.set(f'{{{w}}}line', '240')
-            spacing.set(f'{{{w}}}lineRule', 'auto')
-            r = etree.SubElement(p, f'{{{w}}}r')
-            etree.SubElement(r, f'{{{w}}}{"separator" if fid_val == "-1" else "continuationSeparator"}')
-
-        # 内容脚注
-        label_order = sorted(self._footnote_label_to_id.items(), key=lambda x: x[1])
-        for label, fid in label_order:
-            fn_data = self._footnote_defs.get(label)
-            if not fn_data:
-                continue
-
-            fn = etree.SubElement(footnotes, f'{{{w}}}footnote')
-            fn.set(f'{{{w}}}id', str(fid))
-
-            for child in fn_data.get('children', []):
-                if child.get('type') != 'paragraph':
-                    continue
-                content = child.get('content', '')
-                p = etree.SubElement(fn, f'{{{w}}}p')
-                pPr = etree.SubElement(p, f'{{{w}}}pPr')
-                pStyle = etree.SubElement(pPr, f'{{{w}}}pStyle')
-                pStyle.set(f'{{{w}}}val', 'FootnoteText')
-                # 段间距
-                spacing = etree.SubElement(pPr, f'{{{w}}}spacing')
-                spacing.set(f'{{{w}}}after', '60')
-                spacing.set(f'{{{w}}}line', '240')
-                spacing.set(f'{{{w}}}lineRule', 'auto')
-
-                # 脚注编号引用
-                r1 = etree.SubElement(p, f'{{{w}}}r')
-                rPr1 = etree.SubElement(r1, f'{{{w}}}rPr')
-                rStyle1 = etree.SubElement(rPr1, f'{{{w}}}rStyle')
-                rStyle1.set(f'{{{w}}}val', 'FootnoteReference')
-                etree.SubElement(r1, f'{{{w}}}footnoteRef')
-
-                # 脚注文本
-                r2 = etree.SubElement(p, f'{{{w}}}r')
-                rPr2 = etree.SubElement(r2, f'{{{w}}}rPr')
-                rFonts = etree.SubElement(rPr2, f'{{{w}}}rFonts')
-                rFonts.set(f'{{{w}}}eastAsia', '宋体')
-                sz = etree.SubElement(rPr2, f'{{{w}}}sz')
-                sz.set(f'{{{w}}}val', '18')  # 9pt
-                t = etree.SubElement(r2, f'{{{w}}}t')
-                t.set(f'{{{self._XML_NS}}}space', 'preserve')
-                t.text = ' ' + content
-
-        return etree.tostring(footnotes, xml_declaration=True, encoding='UTF-8', standalone=True)
-
-    def _inject_native_footnotes(self, doc: Document, output_path: str):
-        """在保存的 docx 中注入原生脚注部分"""
-        # 1. 构建脚注 XML
-        footnotes_xml = self._build_footnotes_xml()
-
-        # 2. 保存文档到缓冲区
-        buf = io.BytesIO()
-        doc.save(buf)
-        buf.seek(0)
-
-        # 3. 修改 zip，注入脚注（跳过模板中已有的 footnotes）
-        with zipfile.ZipFile(buf, 'r') as zin:
-            with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zout:
-                for item in zin.infolist():
-                    # 跳过模板自带的脚注文件，用我们构建的替换
-                    if item.filename in ('word/footnotes.xml', 'word/_rels/footnotes.xml.rels'):
-                        continue
-                    data = zin.read(item.filename)
-                    if item.filename == 'word/_rels/document.xml.rels':
-                        data = self._patch_rels_for_footnotes(data)
-                    elif item.filename == '[Content_Types].xml':
-                        data = self._patch_content_types_for_footnotes(data)
-                    zout.writestr(item, data)
-                # 添加新的 footnotes.xml
-                zout.writestr('word/footnotes.xml', footnotes_xml)
-
-    def _patch_rels_for_footnotes(self, data: bytes) -> bytes:
-        """在 document.xml.rels 中添加脚注关系"""
-        root = etree.fromstring(data)
-        rels_ns = 'http://schemas.openxmlformats.org/package/2006/relationships'
-        footnotes_type = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes'
-
-        for rel in root.findall(f'{{{rels_ns}}}Relationship'):
-            if rel.get('Type') == footnotes_type:
-                return data  # 已存在
-
-        max_id = 0
-        for rel in root.findall(f'{{{rels_ns}}}Relationship'):
-            rid = rel.get('Id', '')
-            if rid.startswith('rId'):
-                try:
-                    max_id = max(max_id, int(rid[3:]))
-                except ValueError:
-                    pass
-
-        new_rel = etree.SubElement(root, f'{{{rels_ns}}}Relationship')
-        new_rel.set('Id', f'rId{max_id + 1}')
-        new_rel.set('Type', footnotes_type)
-        new_rel.set('Target', 'footnotes.xml')
-
-        return etree.tostring(root, xml_declaration=True, encoding='UTF-8', standalone=True)
-
-    def _patch_content_types_for_footnotes(self, data: bytes) -> bytes:
-        """在 [Content_Types].xml 中添加脚注内容类型"""
-        root = etree.fromstring(data)
-        ct_ns = 'http://schemas.openxmlformats.org/package/2006/content-types'
-
-        for override in root.findall(f'{{{ct_ns}}}Override'):
-            if override.get('PartName') == '/word/footnotes.xml':
-                return data  # 已存在
-
-        override = etree.SubElement(root, f'{{{ct_ns}}}Override')
-        override.set('PartName', '/word/footnotes.xml')
-        override.set('ContentType',
-                     'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml')
-
-        return etree.tostring(root, xml_declaration=True, encoding='UTF-8', standalone=True)
 
     def _log(self, message: str, level: str = "info"):
         if self.verbose or level == "error":

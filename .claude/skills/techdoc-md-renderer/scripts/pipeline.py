@@ -2,9 +2,10 @@
 
 @tool
 name: conversion_pipeline
-description: 自动编排 preflight→auto-fix→convert→postflight→retry 全流程。
-             单文件转换的首选入口，替代手工三步调用。内置重试闭环：
-             postflight 发现 critical 问题时自动修正源文件并重新转换。
+description: 自动编排 preflight→auto-fix→convert→postflight→retry→polish 全流程。
+             单文件转换的首选入口。内置重试闭环：postflight 发现 critical 问题
+             时自动修正源文件并重新转换。polish 步骤修正表格列宽、图片尺寸、
+             段落间距、字体一致性等渲染细节。
 when_to_use: 用户要求转换单个 Markdown 文件时优先使用。复杂/批量场景
              则手工编排 preflight + convert_directory + postflight。
 input: Markdown 文件路径, format ('word'|'html'|'pdf'), max_retries (默认2)
@@ -33,6 +34,7 @@ from dataclasses import dataclass, field
 from preflight import PreflightChecker, PreflightReport
 from postflight import PostflightChecker, PostflightReport
 from api import Converter, ConversionResult
+from polisher import polish as run_polish, PolishReport
 
 
 @dataclass
@@ -56,6 +58,9 @@ class PipelineResult:
     # Postflight
     postflight_issues: int = 0
     postflight_critical: int = 0
+
+    # Polish
+    polish_modified: int = 0
 
     # Retry
     retries: int = 0
@@ -235,6 +240,11 @@ class ConversionPipeline:
                 result.output_path = last_conversion.output_path
                 result.conversion = last_conversion
 
+            # === Phase 5: Polish（输出修正） ===
+            if result.output_path and Path(result.output_path).exists():
+                polish_report = run_polish(result.output_path)
+                result.polish_modified = polish_report.modified
+
         finally:
             # 恢复源文件
             self._restore(input_path, backup)
@@ -261,6 +271,9 @@ class ConversionPipeline:
         if result.postflight_issues > 0:
             parts.append(f"  Postflight: {result.postflight_issues} 个问题"
                         f"（{result.postflight_critical} 严重）")
+
+        if result.polish_modified > 0:
+            parts.append(f"  Polish: 修正 {result.polish_modified} 处渲染细节")
 
         if result.error:
             parts.append(f"  错误: {result.error}")

@@ -144,26 +144,33 @@ result = converter.convert_file("doc.md", format="html")
 
 ### 质量保障管线
 
-每次转换遵循 **preflight → convert → postflight** 三部曲。对于单文件转换，优先使用 `ConversionPipeline` 自动化闭环：
+每次转换遵循 **preflight → convert → postflight → polish** 四部曲：
 
 ```
-源 Markdown ──► preflight 检查 ──► 自动修复 ──► 转换 ──► postflight 检查
-                  │                                     │
-                  ├─ 断链 / 空链接          ┌────────── 重试循环 ──────────┐
-                  ├─ 图片路径不存在          │  如有 critical 问题:         │
-                  ├─ 过宽表格 (>6列)        │  1. 分析问题类型             │
-                  ├─ Mermaid 中文标点        │  2. 尝试修正源文件           │
-                  ├─ 标题层级跳跃            │  3. 重新转换                │
-                  ├─ 空章节                  │  4. 重新检查（最多 2 次）    │
-                  ├─ 代码块未指定语言        └────────────────────────────┘
-                  ├─ 重复标题
-                  ├─ 行尾空白
-                  └─ 连续空行过多                postflight 检查:
-                                                    ├─ 占位符残留
-                                                    ├─ 流程图未渲染
-                                                    ├─ 图片引用断裂
-                                                    └─ 表格溢出
+源 Markdown ──► preflight ──► auto-fix ──► convert ──► postflight ──► polish
+                  │                 │          │           │              │
+                  │ 语法级检查       │ 自动修复  │ Markdown  │ 输出检查     │ 输出修正
+                  │                 │          │  → 输出   │              │
+                  ├─ 断链/空链接     ├─ 中文标点 │           ├─ 占位符残留  ├─ 表格列宽适配
+                  ├─ 图片路径       ├─ 空链接   │           ├─ 流程图未渲染├─ 图片尺寸规范
+                  ├─ 过宽表格       ├─ 行尾空白 │           ├─ 图片断裂    ├─ 章节分页
+                  ├─ Mermaid 语法   └─ 连续空行 │           └─ 表格溢出    ├─ 字体一致性
+                  ├─ 标题层级跳跃              │                          ├─ 段落间距
+                  ├─ 空章节                    │  重试循环                └─ 尾部清理
+                  ├─ 代码块语言                │  postflight critical
+                  ├─ 重复标题                  │  → 修正源文件
+                  └─ 行尾空白                  │  → 重新转换
+                                              │  (最多2次)
 ```
+
+**四步的职责边界**：
+
+| 步骤 | 检查对象 | 能发现什么 | 能修什么 | 不能修什么 |
+|------|----------|-----------|----------|-----------|
+| preflight | 源 Markdown 文本 | 语法错误、格式规范 | 中文标点、空链接、空白 | 图片缺失、语义错误 |
+| convert | AST → HTML → 输出 | — | — | CSS样式→Word格式的损耗 |
+| postflight | 输出文件 | 崩溃级问题、占位符 | — | 渲染细节（只读检查） |
+| polish | 输出文件 | 渲染质量损耗 | 列宽、图片大小、分页、字体、间距 | 源文件问题 |
 
 **单文件推荐用 pipeline（一步到位）**：
 
@@ -173,7 +180,7 @@ from pipeline import ConversionPipeline
 pipeline = ConversionPipeline(max_retries=2)
 result = pipeline.run("doc.md", format="word")
 print(pipeline.format_result(result))
-# 自动完成 preflight → auto-fix → convert → postflight → retry
+# 自动完成 preflight → auto-fix → convert → postflight → retry → polish
 ```
 
 **批量/复杂场景手工编排（保持灵活性）**：
@@ -218,8 +225,9 @@ for result in batch.files:
 |------|----------|------|
 | `preflight_check` | 转换前，每次必调 | 扫描源文件 10 类问题 + 自动修复 |
 | `convert_document` | preflight 通过后 | 执行 Markdown→HTML/Word/PDF |
-| `postflight_check` | 转换后，每次必调 | 检查输出文件质量 |
-| `ConversionPipeline` | 单文件转换首选 | 自动编排上述三步 + 重试闭环 |
+| `postflight_check` | 转换后，每次必调 | 检查输出有无崩溃级问题 |
+| `polish_output` | postflight 后，每次必调 | 修正表格列宽、图片尺寸、分页、字体、间距 |
+| `ConversionPipeline` | 单文件转换首选 | 自动编排上述四步 + 重试闭环 |
 
 ## 参数决策指南
 

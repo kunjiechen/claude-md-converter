@@ -22,3 +22,5 @@ class RenderContext:
     flowcharts: list = field(default_factory=list)
     page_header_html: str = ""
     page_footer_html: str = ""
+    mermaid_js_cdn: str = ""
+    inline_images: bool = False

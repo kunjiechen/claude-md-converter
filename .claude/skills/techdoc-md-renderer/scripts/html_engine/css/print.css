@@ -53,3 +53,11 @@ figure {
 .revision-section {
     page-break-after: always;
 }
+
+hr.pagebreak {
+    page-break-after: always;
+    visibility: hidden;
+    margin: 0;
+    padding: 0;
+    border: none;
+}

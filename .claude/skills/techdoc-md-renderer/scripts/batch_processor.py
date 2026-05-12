@@ -37,6 +37,10 @@ class BatchProcessor:
         self.max_workers = options.get('max_workers', 4)
         self.log_file = options.get('log_file')
         self.verbose = options.get('verbose', False)
+        self.generate_index = options.get('generate_index', True)
+        self.index_title = options.get('index_title', '文档索引')
+        self.mermaid_render_mode = options.get('mermaid_render_mode', 'auto')
+        self.inline_images = options.get('inline_images', False)
 
         # 初始化解析器
         self.parser = MarkdownParser()
@@ -178,8 +182,10 @@ class BatchProcessor:
                 md_file = future_to_file[future]
                 try:
                     success, message = future.result()
+                    output_file = self._get_output_path(md_file, output_path)
                     file_result = {
                         'input': str(md_file),
+                        'output': str(output_file),
                         'success': success,
                         'message': message
                     }
@@ -202,6 +208,22 @@ class BatchProcessor:
                     }
                     results['files'].append(file_result)
                     self._log("error", f"处理异常: {md_file.name} - {e}")
+
+        # 生成索引页面（仅 HTML 格式且开启索引时）
+        if self.generate_index and self.format == 'html' and results['success'] > 0:
+            try:
+                from index_generator import IndexGenerator
+                gen = IndexGenerator(title=self.index_title)
+                html_files = [
+                    Path(f['output']) for f in results['files']
+                    if f['success'] and Path(f['output']).exists()
+                ]
+                if html_files:
+                    idx_path = gen.generate(html_files, output_path, title=self.index_title)
+                    results['index_path'] = str(idx_path)
+                    self._log("info", f"索引页面已生成: {idx_path}")
+            except Exception as e:
+                self._log("error", f"索引生成失败: {e}")
 
         results['end_time'] = datetime.now().isoformat()
 

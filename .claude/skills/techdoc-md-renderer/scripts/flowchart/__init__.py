@@ -2,6 +2,7 @@
 
 from .renderer import FlowchartProcessor, FlowchartRenderer, MermaidRenderer, PlantUMLRenderer, KrokiRenderer
 from .painter import FlowchartPythonRenderer
+from .chart_renderers import NonFlowchartRenderer, SequenceDiagramRenderer, PieChartRenderer, GanttChartRenderer
 
 __all__ = [
     'FlowchartProcessor',
@@ -10,4 +11,8 @@ __all__ = [
     'PlantUMLRenderer',
     'KrokiRenderer',
     'FlowchartPythonRenderer',
+    'NonFlowchartRenderer',
+    'SequenceDiagramRenderer',
+    'PieChartRenderer',
+    'GanttChartRenderer',
 ]

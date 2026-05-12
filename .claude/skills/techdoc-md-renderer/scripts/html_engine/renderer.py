@@ -18,7 +18,8 @@ class HtmlRenderer:
     # 修订记录表检测关键字
     REVISION_HEADER_KEYWORDS = ['版次', '修订人', '修订日期', '修订内容', '修订原因', '修订描述', '备注']
 
-    def __init__(self, flowchart_processor=None):
+    def __init__(self, flowchart_processor=None, mermaid_render_mode: str = "auto",
+                 inline_images: bool = False):
         self._inline = InlineRenderer()
         self._toc_html = ""
         self._revision_html = ""
@@ -27,6 +28,8 @@ class HtmlRenderer:
         self._footnote_counter = 0
         self._input_dir = None
         self._flowchart_processor = flowchart_processor
+        self._mermaid_render_mode = mermaid_render_mode
+        self._inline_images = inline_images
 
     def render(self, ast: List[Dict[str, Any]], context: RenderContext = None) -> str:
         """将AST渲染为完整HTML文档（body部分）"""
@@ -109,6 +112,8 @@ class HtmlRenderer:
             return self._render_math_inline_para(node)
         elif node_type == 'definition_list':
             return self._render_definition_list(node)
+        elif node_type == 'pagebreak':
+            return '<hr class="pagebreak">'
         return ""
 
     # ---------- 标题 ----------
@@ -412,6 +417,11 @@ class HtmlRenderer:
         self._flowchart_counter += 1
         fid = self._flowchart_counter
 
+        # browser 模式：输出 <pre class="mermaid"> 由浏览器端 mermaid.js 渲染
+        if self._mermaid_render_mode == 'browser':
+            return f'<pre class="mermaid">{self._escape(content)}</pre>'
+
+        # server 模式：预渲染为 base64 图片
         output_dir = Path('output')
         output_dir.mkdir(parents=True, exist_ok=True)
         image_path = output_dir / f'flowchart_{fid}.png'
@@ -438,7 +448,7 @@ class HtmlRenderer:
 
     # ---------- 其他块元素 ----------
 
-    def _render_blockquote(self, node: Dict[str, Any]) -> str:
+    def _render_blockquote(self, node: Dict[str, Any], level: int = 0) -> str:
         children = node.get('children', [])
         parts = []
         for child in children:
@@ -448,20 +458,51 @@ class HtmlRenderer:
                 segments = child.get('children', [])
                 inner = self._inline.render(segments, content)
                 parts.append(f"<p>{inner}</p>")
+            elif child_type == 'blockquote':
+                rendered = self._render_blockquote(child, level + 1)
+                if rendered:
+                    parts.append(rendered)
             else:
                 rendered = self._process_node(child)
                 if rendered:
                     parts.append(rendered)
         if not parts:
             return ""
-        return f'<blockquote class="blockquote">\n' + "\n".join(parts) + '\n</blockquote>'
+        level_class = f' blockquote--level-{level}' if level > 0 else ''
+        return f'<blockquote class="blockquote{level_class}">\n' + "\n".join(parts) + '\n</blockquote>'
 
     def _render_image(self, node: Dict[str, Any]) -> str:
         src = node.get('attributes', {}).get('src', '')
         alt = node.get('attributes', {}).get('alt', '')
         if not src:
             return ""
-        return f'<figure class="image">\n  <img src="{self._escape_attr(src)}" alt="{self._escape_attr(alt)}">\n  <figcaption>{self._escape(alt)}</figcaption>\n</figure>'
+
+        resolved_src = src
+        if self._inline_images:
+            resolved_src = self._maybe_inline_src(src)
+
+        return f'<figure class="image">\n  <img src="{self._escape_attr(resolved_src)}" alt="{self._escape_attr(alt)}">\n  <figcaption>{self._escape(alt)}</figcaption>\n</figure>'
+
+    def _maybe_inline_src(self, src: str) -> str:
+        """如果是本地文件路径，base64 编码为 data URI；否则原样返回"""
+        import base64
+        import mimetypes
+        # 跳过远程 URL 和已内联的 data URI
+        if src.startswith(('http://', 'https://', 'data:')):
+            return src
+        p = Path(src)
+        if not p.is_absolute() and self._input_dir:
+            p = Path(self._input_dir) / src
+        if not p.exists():
+            return src
+        try:
+            mime, _ = mimetypes.guess_type(str(p))
+            mime = mime or 'application/octet-stream'
+            with open(p, 'rb') as f:
+                b64 = base64.b64encode(f.read()).decode()
+            return f'data:{mime};base64,{b64}'
+        except Exception:
+            return src
 
     def _render_footnote_block(self, node: Dict[str, Any]) -> str:
         children = node.get('children', [])

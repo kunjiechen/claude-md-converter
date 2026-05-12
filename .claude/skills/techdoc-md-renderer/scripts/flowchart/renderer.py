@@ -22,6 +22,12 @@ try:
 except ImportError:
     HAS_PAINTER = False
 
+try:
+    from .chart_renderers import NonFlowchartRenderer
+    HAS_CHART_RENDERER = True
+except ImportError:
+    HAS_CHART_RENDERER = False
+
 
 class FlowchartRenderer(ABC):
     """流程图渲染器基类"""
@@ -356,6 +362,9 @@ class FlowchartProcessor:
         # Python绘图渲染器（推荐，完全符合G-C110规范）
         self.python_renderer = FlowchartPythonRenderer(**options) if self.use_python_painter and HAS_PAINTER else None
 
+        # 非 flowchart 图表 Python 渲染器（时序图/饼图/甘特图）
+        self.non_flowchart_renderer = NonFlowchartRenderer(**options) if self.use_python_painter and HAS_CHART_RENDERER else None
+
         # Kroki在线API渲染器
         self.kroki_renderer = KrokiRenderer(**options) if self.use_kroki else None
 
@@ -375,7 +384,7 @@ class FlowchartProcessor:
         """
         code_stripped = code.strip()
 
-        # 检测Mermaid
+        # 检测Mermaid（细分子类型）
         mermaid_keywords = [
             'graph ', 'flowchart ', 'sequenceDiagram', 'classDiagram',
             'stateDiagram', 'gantt', 'pie', 'journey'
@@ -387,6 +396,20 @@ class FlowchartProcessor:
         if code_stripped.startswith('@startuml') or code_stripped.startswith('@startgantt'):
             return 'plantuml'
 
+        return None
+
+    def _detect_mermaid_subtype(self, code: str) -> Optional[str]:
+        """检测 Mermaid 代码的子类型"""
+        code_stripped = code.strip()
+        subtype_keywords = [
+            'sequenceDiagram', 'gantt', 'pie', 'classDiagram',
+            'stateDiagram', 'journey'
+        ]
+        for kw in subtype_keywords:
+            if kw in code_stripped:
+                return kw
+        if 'graph ' in code_stripped or 'flowchart ' in code_stripped:
+            return 'flowchart'
         return None
 
     def render_flowchart(self, code: str, chart_type: str, output_path: str) -> bool:
@@ -401,19 +424,32 @@ class FlowchartProcessor:
         Returns:
             渲染是否成功
         """
-        # 优先使用Python绘图（推荐，完全符合G-C110规范）
-        # 只支持graph/flowchart类型的流程图
-        if self.use_python_painter and self.python_renderer and chart_type == 'mermaid':
+        # 检测 Mermaid 子类型
+        mermaid_subtype = None
+        if chart_type == 'mermaid':
+            mermaid_subtype = self._detect_mermaid_subtype(code)
+
+        # 1. Python 流程图渲染器（仅 graph/flowchart）
+        if (self.use_python_painter and self.python_renderer
+                and chart_type == 'mermaid'
+                and mermaid_subtype == 'flowchart'):
             result = self.python_renderer.render(code, output_path)
             if result:
                 return True
-            # Python绘图失败（可能是sequenceDiagram等非流程图类型），继续尝试其他渲染器
 
-        # 使用Kroki
+        # 2. Python 非 flowchart 图表渲染器（时序图/饼图/甘特图）
+        if (self.use_python_painter and self.non_flowchart_renderer
+                and chart_type == 'mermaid'
+                and mermaid_subtype in ('sequenceDiagram', 'gantt', 'pie')):
+            result = self.non_flowchart_renderer.render(code, mermaid_subtype, output_path)
+            if result:
+                return True
+
+        # 3. Kroki 在线 API
         if self.use_kroki and self.kroki_renderer:
             return self.kroki_renderer.render(code, output_path, chart_type)
 
-        # 使用本地渲染器
+        # 4. 本地 mmdc / plantuml CLI
         if chart_type == 'mermaid' and self.mermaid_renderer:
             return self.mermaid_renderer.render(code, output_path)
         elif chart_type == 'plantuml' and self.plantuml_renderer:
@@ -459,6 +495,10 @@ class FlowchartProcessor:
         # 检查Python绘图渲染器
         if self.use_python_painter and self.python_renderer and self.python_renderer.is_available():
             available.append('python_painter')
+
+        # 检查非 flowchart 图表渲染器
+        if self.use_python_painter and self.non_flowchart_renderer and self.non_flowchart_renderer.is_available():
+            available.append('chart_renderers')
 
         # 检查Kroki
         if self.use_kroki and self.kroki_renderer and self.kroki_renderer.is_available():

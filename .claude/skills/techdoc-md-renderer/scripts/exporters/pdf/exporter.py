@@ -60,7 +60,7 @@ class PdfExporter:
         )
 
         # HTML 渲染器
-        self._renderer = HtmlRenderer(flowchart_processor=self._flowchart)
+        self._renderer = HtmlRenderer(flowchart_processor=self._flowchart, mermaid_render_mode='server')
 
     def convert(self, ast: List[Dict[str, Any]], output_path: str) -> bool:
         """将 AST 转换为 PDF 文件"""

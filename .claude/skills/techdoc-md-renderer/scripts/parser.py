@@ -40,9 +40,11 @@ class MarkdownParser:
             解析后的AST节点列表
         """
         text = self._preprocess_highlight(text)
+        text = self._preprocess_pagebreak(text)
         tokens = self.md.parse(text)
         converter = TokenConverter()
-        return converter.convert(tokens)
+        ast = converter.convert(tokens)
+        return self._postprocess_pagebreaks(ast)
 
     @staticmethod
     def _preprocess_highlight(text: str) -> str:
@@ -53,6 +55,32 @@ class MarkdownParser:
         for i in range(0, len(parts), 2):
             parts[i] = re.sub(r'==([^=\s].*?[^=\s])==', r'<mark>\1</mark>', parts[i])
         return ''.join(parts)
+
+    @staticmethod
+    def _preprocess_pagebreak(text: str) -> str:
+        """将 <!-- pagebreak --> 转换为 [PAGEBREAK] 标记"""
+        import re
+        return re.sub(r'<!--\s*pagebreak\s*-->', '[PAGEBREAK]', text)
+
+    @staticmethod
+    def _postprocess_pagebreaks(ast: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """将内容为 [PAGEBREAK] 的段落节点替换为 pagebreak 节点"""
+        result = []
+        for node in ast:
+            if node.get('type') == 'paragraph' and node.get('content', '').strip() == '[PAGEBREAK]':
+                result.append({'type': 'pagebreak', 'content': '', 'children': [], 'attributes': {}})
+            elif node.get('type') == 'blockquote':
+                node['children'] = MarkdownParser._postprocess_pagebreaks(node['children'])
+                result.append(node)
+            elif node.get('type') == 'list':
+                node['children'] = MarkdownParser._postprocess_pagebreaks(node['children'])
+                result.append(node)
+            elif node.get('type') == 'list_item':
+                node['children'] = MarkdownParser._postprocess_pagebreaks(node['children'])
+                result.append(node)
+            else:
+                result.append(node)
+        return result
 
     def parse_file(self, file_path: str) -> List[Dict[str, Any]]:
         """

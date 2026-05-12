@@ -11,6 +11,9 @@
 {% if date %}<meta name="doc-date" content="{{ date }}">{% endif %}
 <title>{{ title | default('技术文档') }}</title>
 {{ theme_css }}
+{% if mermaid_js_cdn %}
+{{ mermaid_js_cdn }}
+{% endif %}
 </head>
 <body>
 

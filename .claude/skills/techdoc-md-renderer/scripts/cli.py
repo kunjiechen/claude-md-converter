@@ -92,6 +92,31 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         help='详细输出'
     )
 
+    parser.add_argument(
+        '--mermaid-render',
+        choices=['browser', 'server', 'auto'],
+        default='auto',
+        help='Mermaid渲染模式: browser(浏览器端) / server(服务器端) / auto(自动, 默认)'
+    )
+
+    parser.add_argument(
+        '--inline-images',
+        action='store_true',
+        help='将本地图片 base64 内联到 HTML 中（生成真正的自包含单文件）'
+    )
+
+    parser.add_argument(
+        '--no-index',
+        action='store_true',
+        help='禁止自动生成目录索引页 index.html（仅目录输入时有效）'
+    )
+
+    parser.add_argument(
+        '--index-title',
+        default='文档索引',
+        help='索引页面标题 (默认: 文档索引)'
+    )
+
     return parser.parse_args(args)
 
 
@@ -128,6 +153,12 @@ def main(args: Optional[List[str]] = None):
 
     if parsed_args.output:
         options['output_dir'] = parsed_args.output
+
+    # 新增：mermaid 渲染模式 & 图片内联 & 索引
+    options['mermaid_render_mode'] = parsed_args.mermaid_render
+    options['inline_images'] = parsed_args.inline_images
+    options['generate_index'] = not parsed_args.no_index
+    options['index_title'] = parsed_args.index_title
 
     # 判断是文件还是目录
     input_path = Path(parsed_args.input)

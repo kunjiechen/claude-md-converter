@@ -39,6 +39,10 @@ class HtmlExporter:
         # 流程图处理器
         self._flowchart = FlowchartProcessor(**options)
 
+        # 渲染模式
+        self._mermaid_render_mode = options.get('mermaid_render_mode', 'auto')
+        self._inline_images = options.get('inline_images', False)
+
         # Jinja2 环境
         template_dir = Path(__file__).parent.parent.parent / 'html_engine' / 'templates'
         self._jinja = Environment(
@@ -47,7 +51,11 @@ class HtmlExporter:
         )
 
         # HTML 渲染器
-        self._renderer = HtmlRenderer(flowchart_processor=self._flowchart)
+        self._renderer = HtmlRenderer(
+            flowchart_processor=self._flowchart,
+            mermaid_render_mode=self._mermaid_render_mode,
+            inline_images=self._inline_images,
+        )
 
     def convert(self, ast: List[Dict[str, Any]], output_path: str) -> bool:
         """将AST转换为HTML文件（兼容 BaseConverter 接口）"""
@@ -62,6 +70,20 @@ class HtmlExporter:
             company=self.doc_company,
             date=date.today().strftime('%Y.%m.%d'),
         )
+
+        # 解析 mermaid 渲染模式：HTML 默认使用浏览器端渲染
+        effective_mermaid_mode = self._mermaid_render_mode
+        if effective_mermaid_mode == 'auto':
+            effective_mermaid_mode = 'browser'
+        self._renderer._mermaid_render_mode = effective_mermaid_mode
+        self._renderer._inline_images = self._inline_images
+
+        # browser 模式：注入 mermaid.js CDN 脚本
+        if effective_mermaid_mode == 'browser':
+            from flowchart.html_embed import get_mermaid_cdn_script, get_mermaid_init_script
+            context.mermaid_js_cdn = (
+                get_mermaid_cdn_script() + '\n' + get_mermaid_init_script()
+            )
 
         # 渲染 body HTML
         self._renderer.render(ast, context)
@@ -90,6 +112,7 @@ class HtmlExporter:
             revision_html=context.revision_html,
             cover_html=context.cover_html,
             flowcharts=context.flowcharts,
+            mermaid_js_cdn=context.mermaid_js_cdn,
         )
 
         output_file.parent.mkdir(parents=True, exist_ok=True)

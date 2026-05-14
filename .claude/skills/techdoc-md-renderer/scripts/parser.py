@@ -4,10 +4,12 @@ Markdown解析器
 """
 
 from typing import Any, Dict, List, Optional
+import re
 from markdown_it import MarkdownIt
 from mdit_py_plugins.footnote import footnote_plugin
 from mdit_py_plugins.texmath import texmath_plugin
 from mdit_py_plugins.deflist import deflist_plugin
+from analyzers.markdown_normalizer import normalize_markdown_text
 
 
 class MarkdownParser:
@@ -39,11 +41,13 @@ class MarkdownParser:
         Returns:
             解析后的AST节点列表
         """
+        text = normalize_markdown_text(text)
         text = self._preprocess_highlight(text)
         text = self._preprocess_pagebreak(text)
         tokens = self.md.parse(text)
         converter = TokenConverter()
         ast = converter.convert(tokens)
+        ast = self._apply_table_markers(ast)
         return self._postprocess_pagebreaks(ast)
 
     @staticmethod
@@ -80,6 +84,23 @@ class MarkdownParser:
                 result.append(node)
             else:
                 result.append(node)
+        return result
+
+    @staticmethod
+    def _apply_table_markers(ast: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Attach <!-- table: kind --> markers to the following table node."""
+        result = []
+        pending_kind = None
+        for node in ast:
+            if node.get('type') == NODE_TABLE_MARKER:
+                pending_kind = node.get('content', '').strip()
+                continue
+            if node.get('type') == NODE_TABLE and pending_kind:
+                node.setdefault('attributes', {})['table_kind'] = pending_kind
+                pending_kind = None
+            elif node.get('type') not in ('paragraph',) or node.get('content', '').strip():
+                pending_kind = None
+            result.append(node)
         return result
 
     def parse_file(self, file_path: str) -> List[Dict[str, Any]]:
@@ -139,6 +160,72 @@ class TokenConverter:
                           'dl_close', 'dt_open', 'dt_close', 'dd_open', 'dd_close'):
             return None
         return None
+
+    def _handle_html_block(self, token) -> Optional[Dict[str, Any]]:
+        """Handle control comments such as <!-- table: register -->."""
+        content = token.content or ""
+        m = re.search(r'<!--\s*table\s*:\s*([a-zA-Z0-9_-]+)\s*-->', content)
+        if m:
+            return {
+                "type": NODE_TABLE_MARKER,
+                "content": m.group(1).strip().lower(),
+                "children": [],
+                "attributes": {}
+            }
+        if '<table' in content.lower() and '</table>' in content.lower():
+            return self._html_table_to_ast(content)
+        return None
+
+    def _html_table_to_ast(self, html: str) -> Optional[Dict[str, Any]]:
+        """Convert a raw HTML table block to the internal table AST."""
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            return None
+
+        soup = BeautifulSoup(html, 'html.parser')
+        table = soup.find('table')
+        if table is None:
+            return None
+
+        rows = []
+        for tr in table.find_all('tr'):
+            cells = []
+            is_header = bool(tr.find('th'))
+            for cell in tr.find_all(['th', 'td'], recursive=False):
+                inner_html = ''.join(str(c) for c in cell.contents)
+                text = cell.get_text('\n', strip=True)
+                align = ''
+                style = cell.get('style', '')
+                if 'text-align:' in style:
+                    align = style.split('text-align:', 1)[1].split(';', 1)[0].strip()
+                cells.append({
+                    "type": NODE_TABLE_CELL,
+                    "content": text,
+                    "children": [],
+                    "attributes": {
+                        "align": align,
+                        "raw_html": inner_html,
+                    }
+                })
+            if cells:
+                row = {
+                    "type": NODE_TABLE_ROW,
+                    "content": "",
+                    "children": cells,
+                    "attributes": {}
+                }
+                if is_header:
+                    row["is_header"] = True
+                rows.append(row)
+        if not rows:
+            return None
+        return {
+            "type": NODE_TABLE,
+            "content": "",
+            "children": rows,
+            "attributes": {"source": "html"}
+        }
 
     def _handle_footnote_block_open(self, token) -> Dict[str, Any]:
         """处理脚注块"""
@@ -781,6 +868,7 @@ NODE_LIST_ITEM = "list_item"
 NODE_TABLE = "table"
 NODE_TABLE_ROW = "table_row"
 NODE_TABLE_CELL = "table_cell"
+NODE_TABLE_MARKER = "table_marker"
 NODE_CODE_BLOCK = "code_block"
 NODE_BLOCKQUOTE = "blockquote"
 NODE_IMAGE = "image"

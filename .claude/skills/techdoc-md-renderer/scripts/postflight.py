@@ -29,6 +29,11 @@ from pathlib import Path
 from typing import List
 from dataclasses import dataclass, field
 
+try:
+    from docx.oxml.ns import qn
+except ImportError:
+    qn = None
+
 
 @dataclass
 class PostflightIssue:
@@ -174,6 +179,7 @@ class PostflightChecker:
             return report
 
         doc = Document(str(file_path))
+        self._check_docx_toc(doc, report)
 
         for i, para in enumerate(doc.paragraphs, 1):
             text = para.text
@@ -189,12 +195,48 @@ class PostflightChecker:
         # 检查表格溢出风险
         for ti, table in enumerate(doc.tables, 1):
             col_count = len(table.columns)
-            if col_count > 6:
+            grid_width = self._docx_table_grid_width(table)
+            if col_count > 6 and grid_width <= 9500:
                 self._add_issue(report, 'warning', 'table',
-                              f'表格有 {col_count} 列，在 A4 页面可能溢出',
+                              f'表格有 {col_count} 列，当前宽度约 {grid_width} dxa，在 A4 页面可能溢出',
+                              f'表格 {ti}')
+            max_cell_len = 0
+            max_unbroken_len = 0
+            for row in table.rows:
+                for cell in row.cells:
+                    text = cell.text.strip()
+                    max_cell_len = max(max_cell_len, len(text))
+                    for segment in re.split(r'[\s\n\r\t]+', text):
+                        max_unbroken_len = max(max_unbroken_len, len(segment))
+            if max_cell_len > 180 and max_unbroken_len > 120:
+                self._add_issue(report, 'warning', 'table',
+                              f'存在超长单元格 ({max_cell_len} 字符，最长连续片段 {max_unbroken_len} 字符)，建议检查换行和列宽',
                               f'表格 {ti}')
 
         return self._finalize(report)
+
+    @staticmethod
+    def _docx_table_grid_width(table) -> int:
+        """Return summed grid width in dxa; 0 means unavailable."""
+        total = 0
+        if qn is None:
+            return total
+        try:
+            for grid_col in table._tbl.tblGrid.gridCol_lst:
+                width = grid_col.get(qn('w:w'))
+                if width:
+                    total += int(width)
+        except Exception:
+            return 0
+        return total
+
+    def _check_docx_toc(self, doc, report: PostflightReport):
+        """检查目录字段是否明显为空。"""
+        nonempty = [p.text.strip() for p in doc.paragraphs[:8] if p.text.strip()]
+        if nonempty and nonempty[0] == '目录' and len(nonempty) <= 2:
+            self._add_issue(report, 'warning', 'table',
+                          '目录字段可能尚未更新；Word 打开后需要更新域，或生成静态目录',
+                          '目录')
 
     # ---- PDF 检查 ----
 

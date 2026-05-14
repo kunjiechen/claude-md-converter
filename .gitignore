@@ -11,6 +11,12 @@ output/
 *.docx
 *.pdf
 *.html
+*.quality.json
+*.quality.html
+*.backend.json
+*.pipeline_bak
+regression_summary.json
+regression_output/
 
 # IDE
 .vscode/

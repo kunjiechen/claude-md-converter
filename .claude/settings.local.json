@@ -7,7 +7,10 @@
       "Bash(python -c \"from markdown_it import MarkdownIt; md = MarkdownIt\\(\\); print\\(dir\\(md\\)\\)\")",
       "Bash(python -c ' *)",
       "Bash(find /Users/chenkunjie -name \"G-C110*\" -type f 2>/dev/null | head -20)",
-      "Read(//Users/chenkunjie/**)"
+      "Read(//Users/chenkunjie/**)",
+      "Skill(techdoc-md-renderer)",
+      "Bash(cd /Users/chenkunjie/Downloads/SBPAI/Proj/techdoc-md-renderer/.claude/skills/techdoc-md-renderer && python3 *)",
+      "Bash(python3 -c *sys.path.insert(0, '.claude/skills/techdoc-md-renderer/scripts')*)"
     ],
     "additionalDirectories": [
       "/Users/chenkunjie/Downloads/SBPAI/Proj/claude-md-converter/.claude"

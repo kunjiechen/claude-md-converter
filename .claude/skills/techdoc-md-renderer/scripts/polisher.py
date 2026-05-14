@@ -83,6 +83,10 @@ _HEADING_STYLES = {'Heading 1', 'Heading 2', 'Heading 3',
                    'Heading 4', 'Heading 5', 'Heading 6',
                    'heading 1', 'heading 2', 'heading 3',
                    'heading 4', 'heading 5', 'heading 6',
+                   '标题 1', '标题 2', '标题 3',
+                   '标题 4', '标题 5', '标题 6',
+                   '标题1', '标题2', '标题3',
+                   '标题4', '标题5', '标题6',
                    '1', '2', '3', '4', '5', '6'}
 
 
@@ -115,34 +119,197 @@ def _polish_docx(file_path: Path) -> PolishReport:
     return report
 
 
-# ---- 1. 表格列宽自动适配 ----
+# ---- 1. 表格列宽智能适配 ----
 
 def _polish_table_columns(doc, report: PolishReport):
-    """根据单元格内容长度自动调整表格列宽，替代均匀分配"""
+    """按各列实际内容长度智能分配列宽。
+
+    原则：
+    1. 扫描每列所有行，找出各列的实际渲染宽度
+    2. 每列给「刚好够 + 少量余量」，绝不撑大短列
+    3. 剩余宽度按内容占比分配给文字多的列
+    4. 总宽溢出时等比压缩，保证不超页面
+    5. 横表自动使用更宽的可用区域
+    """
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 
+    _MIN_COL = 600          # 单列最小宽度
+    _PADDING_RATIO = 1.12   # 在测量宽度上留的余量比例
+
+    def _char_width_dxa(text: str) -> float:
+        w = 0.0
+        for c in text:
+            if '一' <= c <= '鿿' or '　' <= c <= '〿' or '＀' <= c <= '￯':
+                w += 240
+            elif '぀' <= c <= 'ゟ' or '゠' <= c <= 'ヿ':
+                w += 220
+            else:
+                w += 120
+        return w
+
+    def _table_available_width(table) -> int:
+        """Determine available content width for a table.
+
+        In OOXML, content belongs to the section defined by the NEXT sectPr
+        (the one that terminates the section). We find the first sectPr
+        FOLLOWING the table in document order.
+        """
+        try:
+            body = table._tbl.getparent()
+            if body is None:
+                return 9000
+            nsmap = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+            children = list(body)
+            tbl_idx = children.index(table._tbl)
+            # Walk forwards from the table to find the terminating sectPr
+            for child in children[tbl_idx:]:
+                for sect in child.iterfind('.//w:sectPr', nsmap):
+                    pgSz = sect.find('w:pgSz', nsmap)
+                    if pgSz is not None:
+                        w_val = int(pgSz.get(qn('w:w'), '0'))
+                        h_val = int(pgSz.get(qn('w:h'), '0'))
+                        if w_val > 0 and h_val > 0 and w_val > h_val:
+                            return 13200
+                        return 9000
+            # No following sectPr — use last section
+            if doc.sections and doc.sections[-1].page_width > doc.sections[-1].page_height:
+                return 13200
+        except Exception:
+            pass
+        return 9000
+
+    # ---- 收集每列文本（扫描所有行） ----
     for ti, table in enumerate(doc.tables, 1):
         rows = table.rows
         col_count = len(table.columns)
-        if col_count == 0:
+        if col_count <= 1:
             continue
 
-        # 计算每列的最大内容宽度（字符数）
-        col_widths = [0] * col_count
+        # 为每表计算可用宽度（横表用更宽的可用区域）
+        _available = _table_available_width(table)
+
+        col_texts: list[list[str]] = [[] for _ in range(col_count)]
         for row in rows:
             for ci in range(min(col_count, len(row.cells))):
-                text = row.cells[ci].text
-                # 中文字符算 2，其他算 1
-                w = sum(2 if '一' <= c <= '鿿' or '　' <= c <= '〿'
-                        else 1 for c in text)
-                col_widths[ci] = max(col_widths[ci], w)
+                col_texts[ci].append(row.cells[ci].text)
 
-        # 计算总宽度并分配
-        total_w = sum(col_widths) or 1
-        available = _A4_CONTENT_WIDTH_DXA
+        # ---- 计算每列的「目标宽度」和「内容总量」 ----
+        col_practical = [0.0] * col_count   # 刚好够用的宽度
+        col_content = [0.0] * col_count     # 内容总量（用于分配剩余空间）
 
-        # 设置 gridCol
+        for ci, texts in enumerate(col_texts):
+            if not texts:
+                continue
+
+            # 扫描该列所有行，取完整文本渲染宽度的最大值 + 余量
+            max_full_width = max((_char_width_dxa(t) for t in texts), default=0)
+            col_practical[ci] = max(_MIN_COL, max_full_width * _PADDING_RATIO)
+
+            # 内容总量 = 所有行文本宽度之和（代表该列「需要多少空间」）
+            col_content[ci] = sum(_char_width_dxa(t) for t in texts)
+
+        # ---- 分配宽度 ----
+        allocated = [0.0] * col_count
+
+        # Phase A: 先满足最小安全宽度
+        sum_practical = sum(col_practical)
+        if sum_practical <= _available:
+            for ci in range(col_count):
+                allocated[ci] = col_practical[ci]
+            remaining = _available - sum_practical
+        else:
+            # 最小宽度之和超出可用 → 等比压缩
+            scale = _available / sum_practical
+            for ci in range(col_count):
+                allocated[ci] = max(_MIN_COL, col_practical[ci] * scale)
+            remaining = 0
+
+        # Phase B: 剩余空间按「内容总量」占比分配给内容多的列
+        if remaining > 10:
+            total_content = sum(col_content)
+            if total_content > 0:
+                for ci in range(col_count):
+                    extra = remaining * (col_content[ci] / total_content)
+                    allocated[ci] += extra
+                remaining = 0
+
+        # Phase C: 仍有剩余 → 均匀分配
+        if remaining > 10:
+            for ci in range(col_count):
+                allocated[ci] += remaining / col_count
+            remaining = 0
+
+        # ---- 表头宽度硬保障：确保每个列表头文字不折行 ----
+        if rows:
+            # 表头单元格的 margin 约 120 dxa (left+right)，加 60 dxa 缓冲
+            _CELL_H_MARGIN = 180
+            for ci in range(col_count):
+                if ci >= len(rows[0].cells):
+                    continue
+                h_text = rows[0].cells[ci].text
+                if not h_text:
+                    continue
+                h_width = _char_width_dxa(h_text) + _CELL_H_MARGIN
+                if allocated[ci] >= h_width:
+                    continue
+                deficit = h_width - allocated[ci]
+                # 从最宽的列拆借（跳过自身和已经到表头底线的列）
+                widest = max(
+                    (i for i in range(col_count) if i != ci),
+                    key=lambda i: allocated[i]
+                )
+                max_take = allocated[widest] - _MIN_COL
+                # 被拆借列也要留够自己的表头宽度
+                if widest < len(rows[0].cells):
+                    w_text = rows[0].cells[widest].text
+                    if w_text:
+                        w_min = _char_width_dxa(w_text) + _CELL_H_MARGIN
+                        max_take = min(max_take, allocated[widest] - w_min)
+                take = min(deficit, max(max_take, 0))
+                if take > 0:
+                    allocated[widest] -= take
+                    allocated[ci] += take
+
+        # ---- 美观均衡：防止单列过宽或边列过窄 ----
+        # 对列数少的表，头尾列被挤到 600dxa 而中间列 85% 太难看。
+        # 约束：单列上限 ≤ _available * max_single_ratio
+        #       边列下限 ≥ _available * min_edge_ratio
+        if col_count in (2, 3):
+            max_single_ratio = 0.68 if col_count == 3 else 0.78
+            min_edge_ratio = 0.12 if col_count == 3 else 0.18
+
+            # 单列上限约束
+            cap = _available * max_single_ratio
+            for ci in range(col_count):
+                if allocated[ci] > cap:
+                    excess = allocated[ci] - cap
+                    allocated[ci] = cap
+                    others = [c for c in range(col_count) if c != ci]
+                    other_content = sum(col_content[c] for c in others)
+                    if other_content > 0:
+                        for c in others:
+                            allocated[c] += excess * (col_content[c] / other_content)
+
+            # 边列下限约束
+            edge_min = _available * min_edge_ratio
+            for ci in (0, col_count - 1):
+                if allocated[ci] < edge_min:
+                    deficit = edge_min - allocated[ci]
+                    widest = max(range(col_count), key=lambda i: allocated[i])
+                    if allocated[widest] - deficit > _MIN_COL:
+                        allocated[widest] -= deficit
+                        allocated[ci] = edge_min
+
+        # ---- 整数化 + 确保总和不超 _available ----
+        int_widths = [max(_MIN_COL, int(w)) for w in allocated]
+        diff = _available - sum(int_widths)
+        if diff != 0 and col_count > 0:
+            # 差值加给内容最多的列
+            max_content_idx = max(range(col_count), key=lambda i: col_content[i])
+            int_widths[max_content_idx] = max(_MIN_COL, int_widths[max_content_idx] + diff)
+
+        # ---- 写入 gridCol ----
         tbl = table._tbl
         tblGrid = tbl.find(qn('w:tblGrid'))
         if tblGrid is None:
@@ -150,29 +317,203 @@ def _polish_table_columns(doc, report: PolishReport):
             tblPr = tbl.find(qn('w:tblPr'))
             if tblPr is not None:
                 tblPr.addnext(tblGrid)
-
-        # 清除旧的 gridCol
         for gc in tblGrid.findall(qn('w:gridCol')):
             tblGrid.remove(gc)
 
-        adjusted = False
-        for cw in col_widths:
+        equal_w = _available // col_count
+        for ci, w in enumerate(int_widths):
             gc = OxmlElement('w:gridCol')
-            width_dxa = max(600, int(cw / total_w * available))
-            gc.set(qn('w:w'), str(width_dxa))
+            gc.set(qn('w:w'), str(w))
             tblGrid.append(gc)
-            if abs(width_dxa - available // col_count) > 200:
-                adjusted = True
 
-        if adjusted and col_count > 1:
+        # ---- 同时校正 cell 级别的 tcW ----
+        for row in table.rows:
+            for ci in range(min(col_count, len(row.cells))):
+                tcPr = row.cells[ci]._tc.find(qn('w:tcPr'))
+                if tcPr is None:
+                    tcPr = OxmlElement('w:tcPr')
+                    row.cells[ci]._tc.insert(0, tcPr)
+                tcW = tcPr.find(qn('w:tcW'))
+                if tcW is None:
+                    tcW = OxmlElement('w:tcW')
+                    tcPr.append(tcW)
+                tcW.set(qn('w:w'), str(int_widths[ci]))
+                tcW.set(qn('w:type'), 'dxa')
+
+        if any(abs(w - equal_w) > 300 for w in int_widths):
             report.items.append(PolishItem(
                 'table',
-                f'表格 {ti} 列宽已按内容自动适配',
-                f'{col_count} 列, 宽度范围 {min(col_widths)}~{max(col_widths)} 字符'
+                f'表格 {ti} 列宽智能适配',
+                ', '.join(f'C{ci+1}={w}dxa' for ci, w in enumerate(int_widths))
             ))
 
+    # ---- 连续同列数表格列宽对齐 ----
+    # 当多个同列数表格紧邻排列（如产品列表拆分为多个 table 块），
+    # 各自独立计算会导致竖线不对齐。这里对连续、同列数的表格取
+    # 每列最大宽度，等比缩放到可用宽度后统一写入。
+    try:
+        _harmonize_consecutive_tables(doc, report)
+    except Exception:
+        pass
 
-# ---- 2. 图片尺寸规范化 ----
+
+# ---- 连续表格列宽对齐实现 ----
+
+def _harmonize_consecutive_tables(doc, report: PolishReport):
+    """Align gridCol of consecutive same-column-count tables."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    body = doc.element.body
+    nsmap = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+
+    # 收集 body 中所有 tbl 元素及其索引
+    tbl_entries = []  # [(index_in_body, tbl_element)]
+    children = list(body)
+    for idx, child in enumerate(children):
+        if child.tag == qn('w:tbl'):
+            tbl_entries.append((idx, child))
+
+    if len(tbl_entries) < 2:
+        return
+
+    # 找出连续表格组（中间只有空白段落/空元素）
+    groups = []
+    current_group = [tbl_entries[0]]
+    for i in range(1, len(tbl_entries)):
+        prev_idx = tbl_entries[i - 1][0]
+        curr_idx = tbl_entries[i][0]
+        # 检查中间元素是否可以忽略（空段落、sectPr 等）
+        gap_is_empty = True
+        for j in range(prev_idx + 1, curr_idx):
+            child = children[j]
+            tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+            if tag in ('p',):
+                # 检查段落是否为空
+                text = (child.text or '') + ''.join(
+                    (e.text or '') + (e.tail or '')
+                    for e in child.iter()
+                )
+                if text.strip():
+                    gap_is_empty = False
+                    break
+            elif tag in ('sectPr',):
+                continue  # sectPr 不算内容间隔
+            elif tag in ('tbl',):
+                continue
+            else:
+                gap_is_empty = False
+                break
+
+        if gap_is_empty:
+            current_group.append(tbl_entries[i])
+        else:
+            if len(current_group) >= 2:
+                groups.append(current_group)
+            current_group = [tbl_entries[i]]
+
+    if len(current_group) >= 2:
+        groups.append(current_group)
+
+    aligned_count = 0
+    for group in groups:
+        # 按列数分组（同一连续组内可能列数不同）
+        by_cols: dict = {}
+        for idx, tbl in group:
+            tblGrid = tbl.find(qn('w:tblGrid'))
+            if tblGrid is None:
+                continue
+            gc_list = tblGrid.findall(qn('w:gridCol'))
+            col_count = len(gc_list)
+            if col_count <= 1:
+                continue
+            by_cols.setdefault(col_count, []).append((idx, tbl, gc_list))
+
+        for col_count, entries in by_cols.items():
+            if len(entries) < 2:
+                continue
+
+            # 取每列的最大宽度
+            max_widths = [0] * col_count
+            for _, _, gc_list in entries:
+                for ci, gc in enumerate(gc_list):
+                    w = int(gc.get(qn('w:w'), '0'))
+                    if w > max_widths[ci]:
+                        max_widths[ci] = w
+
+            # 确定可用宽度（取组内第一个表的可用宽度）
+            first_tbl = entries[0][1]
+            available = 9000
+            try:
+                tbl_idx_in_body = children.index(first_tbl)
+                for child in children[tbl_idx_in_body:]:
+                    for sect in child.iterfind('.//w:sectPr', nsmap):
+                        pgSz = sect.find('w:pgSz', nsmap)
+                        if pgSz is not None:
+                            w_val = int(pgSz.get(qn('w:w'), '0'))
+                            h_val = int(pgSz.get(qn('w:h'), '0'))
+                            if w_val > 0 and h_val > 0 and w_val > h_val:
+                                available = 13200
+                            break
+            except Exception:
+                pass
+
+            total_max = sum(max_widths)
+            if total_max <= 0:
+                continue
+
+            # 等比缩放到可用宽度
+            if total_max > available:
+                scale = available / total_max
+                aligned = [max(600, int(w * scale)) for w in max_widths]
+            else:
+                aligned = [int(w) for w in max_widths]
+            # 补齐差值
+            diff = available - sum(aligned)
+            if diff != 0:
+                aligned[-1] += diff
+
+            # 如果对齐后宽度和原宽度完全一致，跳过
+            all_same = True
+            for _, _, gc_list in entries:
+                for ci, gc in enumerate(gc_list):
+                    if int(gc.get(qn('w:w'), '0')) != aligned[ci]:
+                        all_same = False
+                        break
+                if not all_same:
+                    break
+            if all_same:
+                continue
+
+            # 统一写入
+            for _, tbl, gc_list in entries:
+                for gc in gc_list:
+                    tblGrid_elem = tbl.find(qn('w:tblGrid'))
+                    if tblGrid_elem is not None:
+                        for old_gc in list(tblGrid_elem.findall(qn('w:gridCol'))):
+                            tblGrid_elem.remove(old_gc)
+                        for ci, w in enumerate(aligned):
+                            gc_new = OxmlElement('w:gridCol')
+                            gc_new.set(qn('w:w'), str(w))
+                            tblGrid_elem.append(gc_new)
+
+                # 同步更新 cell tcW
+                for row in tbl.findall(qn('w:tr')):
+                    cells = row.findall(qn('w:tc'))
+                    for ci in range(min(col_count, len(cells))):
+                        tcPr = cells[ci].find(qn('w:tcPr'))
+                        if tcPr is not None:
+                            tcW = tcPr.find(qn('w:tcW'))
+                            if tcW is not None:
+                                tcW.set(qn('w:w'), str(aligned[ci]))
+
+            aligned_count += len(entries)
+
+    if aligned_count > 0:
+        report.items.append(PolishItem(
+            'table',
+            f'对齐 {aligned_count} 个连续表格的列宽'
+        ))
 
 def _polish_image_sizes(doc, report: PolishReport):
     """检查并修正图片尺寸，确保不超出页面且保持比例"""
@@ -218,48 +559,75 @@ def _polish_image_sizes(doc, report: PolishReport):
         ))
 
 
-# ---- 3. 章节间分页 ----
+# ---- 3. 标题分页策略 ----
 
 def _polish_page_breaks(doc, report: PolishReport):
-    """在 H1 章节前插入分页符，H2 前可选"""
+    """清理标题强制分页，只保留显式分页，并避免标题孤悬。"""
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 
-    page_break_count = 0
-    prev_heading_level = 0
+    removed_break_count = 0
+    keep_count = 0
 
-    for i, para in enumerate(doc.paragraphs):
-        style_name = para.style.name if para.style else ''
+    def heading_level(style_name: str) -> int | None:
+        if style_name not in _HEADING_STYLES:
+            return None
+        match = re.search(r'([1-6])$', style_name)
+        if not match:
+            return None
+        return int(match.group(1))
 
-        level = None
-        if style_name in _HEADING_STYLES:
-            try:
-                level = int(style_name.split()[-1])
-            except (ValueError, IndexError):
-                continue
+    def remove_page_break_before(pPr) -> int:
+        if pPr is None:
+            return 0
+        removed = 0
+        for page_break in list(pPr.findall(qn('w:pageBreakBefore'))):
+            pPr.remove(page_break)
+            removed += 1
+        return removed
 
+    def ensure_flag(pPr, tag_name: str) -> bool:
+        if pPr.find(qn(tag_name)) is not None:
+            return False
+        pPr.append(OxmlElement(tag_name))
+        return True
+
+    # 有些模板会把“段前分页”写在 Heading 样式里，先从样式层清理。
+    for style in doc.styles:
+        style_name = getattr(style, 'name', '')
+        level = heading_level(style_name)
         if level is None:
-            prev_heading_level = 0
+            continue
+        style_pPr = getattr(style.element, 'pPr', None)
+        removed_break_count += remove_page_break_before(style_pPr)
+
+    for para in doc.paragraphs:
+        style_name = para.style.name if para.style else ''
+        level = heading_level(style_name)
+        if level is None:
             continue
 
-        # H1 前加 page break（第一个标题除外）
-        if level == 1 and i > 0 and prev_heading_level == 0:
-            # 检查前面是否已有分页符
-            pPr = para._p.find(qn('w:pPr'))
-            if pPr is not None:
-                existing_break = pPr.find(qn('w:pageBreakBefore'))
-                if existing_break is None:
-                    # 在段落属性中设置段前分页（比插入独立分页符更稳定）
-                    pb = OxmlElement('w:pageBreakBefore')
-                    pPr.append(pb)
-                    page_break_count += 1
+        pPr = para._p.get_or_add_pPr()
+        removed_break_count += remove_page_break_before(pPr)
 
-        prev_heading_level = level
+        if level <= 3:
+            changed = ensure_flag(pPr, 'w:keepNext')
+            changed = ensure_flag(pPr, 'w:keepLines') or changed
+            if changed:
+                keep_count += 1
 
-    if page_break_count > 0:
+    if removed_break_count > 0:
         report.items.append(PolishItem(
             'pagebreak',
-            f'在 {page_break_count} 个 H1 章节前添加了分页符'
+            f'移除 {removed_break_count} 个标题段前强制分页',
+            '章节不再默认另起一页，仅保留目录、修订记录和 Markdown 显式分页'
+        ))
+
+    if keep_count > 0:
+        report.items.append(PolishItem(
+            'pagebreak',
+            f'设置 {keep_count} 个标题与下段同页',
+            '避免标题落在页尾导致阅读断裂'
         ))
 
 
@@ -460,6 +828,7 @@ def _polish_html(file_path: Path) -> PolishReport:
             '  pre.mermaid { page-break-inside: avoid; }\n'
             '  h1, h2, h3 { page-break-after: avoid; }\n'
             '  table { page-break-inside: avoid; }\n'
+            '  tr { page-break-inside: avoid; }\n'
             '}\n</style>\n'
         )
         if '</head>' in html:

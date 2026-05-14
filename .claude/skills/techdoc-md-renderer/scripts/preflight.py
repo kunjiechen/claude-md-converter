@@ -107,6 +107,8 @@ class PreflightChecker:
             self._check_broken_links,
             self._check_image_refs,
             self._check_wide_tables,
+            self._check_split_tables,
+            self._check_unescaped_angle_placeholders,
             self._check_mermaid_syntax,
             self._check_heading_gaps,
             self._check_empty_sections,
@@ -301,6 +303,86 @@ class PreflightChecker:
                     break  # 每个表格只报一次
             elif in_table and not stripped.startswith('|'):
                 in_table = False
+
+        return issues
+
+    def _check_split_tables(self, lines: List[str], file_path: Path) -> List[CheckIssue]:
+        """检查疑似被空行/重复分隔线拆开的连续表格。"""
+        issues = []
+
+        def is_table_line(text: str) -> bool:
+            s = text.strip()
+            return s.startswith('|') and s.endswith('|')
+
+        def col_count(text: str) -> int:
+            return len([c for c in text.strip().split('|') if c.strip() != ''])
+
+        blocks = []
+        start = None
+        end = None
+        for i, line in enumerate(lines, 1):
+            if is_table_line(line):
+                if start is None:
+                    start = i
+                end = i
+            elif start is not None:
+                blocks.append((start, end))
+                start = None
+                end = None
+        if start is not None:
+            blocks.append((start, end))
+
+        for idx in range(len(blocks) - 1):
+            a_start, a_end = blocks[idx]
+            b_start, b_end = blocks[idx + 1]
+            gap = b_start - a_end - 1
+            if gap > 2:
+                continue
+            a_cols = col_count(lines[a_start - 1])
+            b_cols = col_count(lines[b_start - 1])
+            if a_cols != b_cols or a_cols < 2:
+                continue
+            # 下一块第二行是分隔线时，通常是同一表格中间又插入了表头分隔。
+            second = lines[b_start] if b_start < len(lines) else ''
+            if re.match(r'^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$', second):
+                issues.append(CheckIssue(
+                    line=b_start,
+                    severity='warning',
+                    category='table',
+                    message='疑似同一张表被空行或重复分隔线拆开，转换时会自动合并；建议回写修正源 Markdown',
+                    fixable=False,
+                ))
+
+        return issues
+
+    def _check_unescaped_angle_placeholders(self, lines: List[str], file_path: Path) -> List[CheckIssue]:
+        """检查技术占位符是否被写成裸尖括号，避免 HTML/Word 阶段被当标签。"""
+        issues = []
+        tag_re = re.compile(r'<\s*/?\s*([A-Za-z][A-Za-z0-9 _/-]{0,30})\s*[^>]*>')
+        safe_html = {
+            'br', 'sub', 'sup', 'kbd', 'mark', 'span', 'strong', 'em',
+            'u', 'ins', 'del', 'code', 'a', 'img'
+        }
+        in_code = False
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('```'):
+                in_code = not in_code
+                continue
+            if in_code:
+                continue
+            for m in tag_re.finditer(line):
+                name = re.sub(r'\s+', '', m.group(1)).lower()
+                if name in safe_html:
+                    continue
+                issues.append(CheckIssue(
+                    line=i,
+                    severity='warning',
+                    category='table',
+                    message=f'裸尖括号占位符 "{m.group(0)}" 可能被当作 HTML 标签，建议写成 &lt;...&gt; 或代码格式',
+                    fixable=False,
+                ))
+                break
 
         return issues
 

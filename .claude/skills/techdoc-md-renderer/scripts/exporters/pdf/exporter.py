@@ -1,14 +1,21 @@
-"""PDF 导出器 — HTML → weasyprint
+"""PDF 导出器 — HTML → PDF backend chain
 
-将 HtmlRenderer 生成的语义化 HTML 通过 weasyprint 渲染为 PDF 文档。
-复用同一套 Jinja2 模板和主题 CSS，确保与 HTML/Word 输出视觉一致。
+将 HtmlRenderer 生成的语义化 HTML 渲染为 PDF 文档。
+优先使用 WeasyPrint；缺少 GTK/Pango 等系统库时，自动降级到
+Chromium/Edge、wkhtmltopdf、LibreOffice 或纯 Python 文本 PDF。
 """
 
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 from datetime import date
+import json
+import shutil
+import subprocess
+import tempfile
+import textwrap
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from bs4 import BeautifulSoup
 
 from parser import MarkdownParser
 from html_engine.renderer import HtmlRenderer
@@ -26,7 +33,7 @@ except ImportError:
 
 
 class PdfExporter:
-    """PDF 导出器：AST → HTML → PDF（weasyprint）"""
+    """PDF 导出器：AST → HTML → PDF（多后端降级）"""
 
     def __init__(self, **options):
         self.output_dir = options.get('output_dir')
@@ -39,10 +46,14 @@ class PdfExporter:
         self.doc_version = options.get('doc_version', '')
         self.doc_department = options.get('doc_department', '')
         self.doc_company = options.get('doc_company', '')
+        self.include_cover = options.get('include_cover', False)
 
         # 页面设置
         self.page_size = options.get('page_size', 'A4')
         self.margin = options.get('margin', '2.5cm')
+        self.last_backend = ''
+        self.last_degraded = False
+        self.last_warnings: List[str] = []
 
         # 主题
         theme_name = options.get('theme', 'tech-doc')
@@ -64,10 +75,6 @@ class PdfExporter:
 
     def convert(self, ast: List[Dict[str, Any]], output_path: str) -> bool:
         """将 AST 转换为 PDF 文件"""
-        if not HAS_WEASYPRINT:
-            self._log("weasyprint 未安装，请运行: pip install weasyprint", "error")
-            return False
-
         output_file = Path(output_path)
 
         # 1. 构建渲染上下文（同 HTML 导出器）
@@ -117,18 +124,206 @@ class PdfExporter:
             revision_html=context.revision_html,
             cover_html=context.cover_html,
             flowcharts=context.flowcharts,
+            show_cover=self.include_cover,
         )
 
-        # 6. weasyprint 渲染
+        # 6. 多后端 PDF 渲染
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            WeasyprintHTML(string=html).write_pdf(str(output_file))
-        except Exception as e:
-            self._log(f"PDF 生成失败: {e}", "error")
+        base_url = str(self.input_dir or output_file.parent)
+        if not self._write_pdf_with_fallbacks(html, output_file, base_url):
             return False
 
-        self._log(f"PDF文档已生成: {output_path}")
+        self._write_backend_sidecar(output_file)
+        backend_note = f" ({self.last_backend})" if self.last_backend else ""
+        self._log(f"PDF文档已生成: {output_path}{backend_note}")
         return True
+
+    def _write_pdf_with_fallbacks(self, html: str, output_file: Path, base_url: str) -> bool:
+        errors: List[str] = []
+
+        if HAS_WEASYPRINT:
+            try:
+                WeasyprintHTML(string=html, base_url=base_url).write_pdf(str(output_file))
+                self.last_backend = "weasyprint"
+                self.last_degraded = False
+                return output_file.exists() and output_file.stat().st_size > 0
+            except Exception as exc:
+                errors.append(f"WeasyPrint failed: {exc}")
+        else:
+            errors.append("WeasyPrint is not installed")
+
+        fallback_steps = (
+            ("chromium", self._render_with_chromium),
+            ("wkhtmltopdf", self._render_with_wkhtmltopdf),
+            ("libreoffice", self._render_with_libreoffice),
+            ("reportlab_text", self._render_with_reportlab_text),
+        )
+        for backend, renderer in fallback_steps:
+            try:
+                if renderer(html, output_file, base_url):
+                    self.last_backend = backend
+                    self.last_degraded = backend != "chromium"
+                    self.last_warnings = errors + [self._backend_quality_note(backend)]
+                    return True
+            except Exception as exc:
+                errors.append(f"{backend} failed: {exc}")
+
+        self.last_warnings = errors
+        self._log("PDF 生成失败，已尝试所有后端: " + " | ".join(errors), "error")
+        return False
+
+    def _render_with_chromium(self, html: str, output_file: Path, base_url: str) -> bool:
+        browser = self._find_chromium()
+        if not browser:
+            return False
+        with tempfile.TemporaryDirectory(prefix="techdoc-pdf-") as tmp:
+            html_path = Path(tmp) / "document.html"
+            html_path.write_text(html, encoding="utf-8")
+            cmd = [
+                browser,
+                "--headless",
+                "--disable-gpu",
+                "--no-sandbox",
+                f"--print-to-pdf={output_file}",
+                html_path.resolve().as_uri(),
+            ]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+            if proc.returncode != 0:
+                self._log(f"Chromium PDF 后端失败: {proc.stderr[-500:]}", "error")
+                return False
+        return output_file.exists() and output_file.stat().st_size > 0
+
+    def _render_with_wkhtmltopdf(self, html: str, output_file: Path, base_url: str) -> bool:
+        exe = shutil.which("wkhtmltopdf")
+        if not exe:
+            return False
+        with tempfile.TemporaryDirectory(prefix="techdoc-pdf-") as tmp:
+            html_path = Path(tmp) / "document.html"
+            html_path.write_text(html, encoding="utf-8")
+            cmd = [exe, "--enable-local-file-access", str(html_path), str(output_file)]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+            if proc.returncode != 0:
+                self._log(f"wkhtmltopdf 后端失败: {proc.stderr[-500:]}", "error")
+                return False
+        return output_file.exists() and output_file.stat().st_size > 0
+
+    def _render_with_libreoffice(self, html: str, output_file: Path, base_url: str) -> bool:
+        soffice = shutil.which("soffice") or shutil.which("libreoffice")
+        if not soffice:
+            return False
+        with tempfile.TemporaryDirectory(prefix="techdoc-pdf-") as tmp:
+            tmp_dir = Path(tmp)
+            html_path = tmp_dir / "document.html"
+            html_path.write_text(html, encoding="utf-8")
+            cmd = [
+                soffice,
+                f"-env:UserInstallation=file://{tmp_dir / 'lo-profile'}",
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(tmp_dir),
+                str(html_path),
+            ]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+            converted = tmp_dir / "document.pdf"
+            if proc.returncode != 0 or not converted.exists():
+                self._log(f"LibreOffice PDF 后端失败: {proc.stderr[-500:]}", "error")
+                return False
+            shutil.copy2(converted, output_file)
+        return output_file.exists() and output_file.stat().st_size > 0
+
+    def _render_with_reportlab_text(self, html: str, output_file: Path, base_url: str) -> bool:
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+            from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+            from reportlab.pdfbase import pdfmetrics
+        except ImportError:
+            return False
+
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["style", "script"]):
+            tag.decompose()
+
+        doc = SimpleDocTemplate(str(output_file), pagesize=A4)
+        styles = getSampleStyleSheet()
+        body = styles["BodyText"]
+        body.fontName = "STSong-Light"
+        body.fontSize = 10
+        body.leading = 14
+        heading = styles["Heading2"]
+        heading.fontName = "STSong-Light"
+
+        story = []
+        for block in soup.find_all(["h1", "h2", "h3", "p", "li", "td", "th"]):
+            text = " ".join(block.get_text(" ", strip=True).split())
+            if not text:
+                continue
+            style = heading if block.name in ("h1", "h2", "h3") else body
+            prefix = "• " if block.name == "li" else ""
+            for part in textwrap.wrap(prefix + text, width=90) or [prefix + text]:
+                story.append(Paragraph(self._escape_reportlab(part), style))
+            story.append(Spacer(1, 4))
+        if not story:
+            story.append(Paragraph("PDF fallback generated, but source text was empty.", body))
+        doc.build(story)
+        return output_file.exists() and output_file.stat().st_size > 0
+
+    @staticmethod
+    def _escape_reportlab(text: str) -> str:
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    @staticmethod
+    def _find_chromium() -> Optional[str]:
+        names = [
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "microsoft-edge",
+            "msedge",
+            "chrome",
+        ]
+        for name in names:
+            found = shutil.which(name)
+            if found:
+                return found
+        candidates = [
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
+            Path("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"),
+            Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe"),
+            Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return None
+
+    @staticmethod
+    def _backend_quality_note(backend: str) -> str:
+        notes = {
+            "chromium": "PDF 使用 Chromium/Edge 打印后端生成，CSS 兼容性较好但分页可能与 WeasyPrint 略有差异。",
+            "wkhtmltopdf": "PDF 使用 wkhtmltopdf 降级生成，现代 CSS/表格分页保真度可能下降。",
+            "libreoffice": "PDF 使用 LibreOffice 降级生成，HTML/CSS 保真度可能下降。",
+            "reportlab_text": "PDF 使用纯文本低保真后端生成，仅保证可阅读，不保留完整表格/样式/图片。",
+        }
+        return notes.get(backend, f"PDF 使用 {backend} 降级生成。")
+
+    def _write_backend_sidecar(self, output_file: Path):
+        if not self.last_backend:
+            return
+        payload = {
+            "backend": self.last_backend,
+            "degraded": self.last_degraded,
+            "warnings": self.last_warnings,
+        }
+        sidecar = output_file.with_suffix(output_file.suffix + ".backend.json")
+        sidecar.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def convert_file(self, input_path: str, output_path: Optional[str] = None) -> bool:
         """转换 Markdown 文件为 PDF"""

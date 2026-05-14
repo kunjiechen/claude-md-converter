@@ -7,8 +7,11 @@ mdit-py-plugins>=0.3.0
 # Word文档生成
 python-docx>=0.8.11
 
-# PDF生成（推荐weasyprint，样式保真度高）
+# PDF生成（推荐weasyprint，样式保真度高；缺系统库时会自动降级）
 weasyprint>=59.0
+
+# PDF低保真兜底（可选但建议安装）
+reportlab>=4.0.0
 
 # 图片处理
 Pillow>=9.0.0

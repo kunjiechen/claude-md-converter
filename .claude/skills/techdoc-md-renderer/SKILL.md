@@ -1,7 +1,7 @@
 ---
 name: techdoc-md-renderer
 description: 将Markdown技术文档渲染为Word/HTML/PDF。基于统一HTML中间表示架构（AST→HTML→多格式导出）。触发词："转word"、"转html"、"转pdf"、"md转word"、"md转html"、"md转pdf"、"convert markdown"、指定.md文件要求输出.docx/.html/.pdf
-version: 2.0.0
+version: 2.1.0
 ---
 
 # TechDoc Markdown 渲染器
@@ -19,7 +19,7 @@ Markdown ──► AST 解析器 ──► HTML 渲染引擎 ──► 语义化
                      HTML → docx             浏览器可直接打开         HTML → weasyprint
 ```
 
-你能够将 Markdown 技术文档转换为三种格式，所有格式共享同一套 HTML 中间表示，确保样式一致。
+你能够将 Markdown 技术文档转换为三种格式，所有格式共享同一套 HTML 中间表示，并通过表格场景分析、最终产物校验和质量门禁保证可阅读、可交付。
 
 ## 推理模式
 
@@ -107,10 +107,10 @@ from pipeline import ConversionPipeline
 
 pipeline = ConversionPipeline()
 result = pipeline.run("doc.md", format="word")
-# 自动完成 preflight → auto-fix → convert → postflight → retry
+# 自动完成 preflight → auto-fix → convert → postflight → retry → polish → artifact validation → quality gate
 ```
 
-`ConversionPipeline` 把标准三步自动化，你只需要报告结果。
+`ConversionPipeline` 把完整质量闭环自动化，你只需要报告结果。
 
 ## 工作方式
 
@@ -119,6 +119,7 @@ result = pipeline.run("doc.md", format="word")
 转换前快速了解当前环境的能力边界，做到心中有数：
 
 - **PDF（weasyprint）**：检查是否可用。不可用时告诉用户，并建议 HTML（浏览器打开后可以打印为 PDF）
+- **PDF 降级**：WeasyPrint 缺 GTK/Pango 等系统库时，自动尝试 Chrome/Edge、wkhtmltopdf、LibreOffice，最终用 ReportLab 生成低保真文本 PDF；质量报告会标记 `pdf_backend` warning
 - **流程图渲染**：三路降级链 — Python Pillow（内置，flowchart 类型）→ Kroki API（在线）→ mmdc CLI（本地安装）。HTML 格式默认浏览器端渲染，无需任何依赖
 - **从哪里加载代码**：`sys.path.insert(0, '<skill_base>/scripts')`，然后从 `api` 模块导入
 
@@ -126,7 +127,20 @@ result = pipeline.run("doc.md", format="word")
 
 ### 执行
 
-使用 `api.Converter` 进行所有转换操作：
+优先使用 `ConversionPipeline` 进行单文件转换；批量转换或特殊编排再使用 `api.Converter`。
+
+单文件推荐：
+
+```python
+import sys
+sys.path.insert(0, '<skill_base>/scripts')
+from pipeline import ConversionPipeline
+
+pipeline = ConversionPipeline(max_retries=2)
+result = pipeline.run("doc.md", format="word", quality_report=True)
+```
+
+批量或自定义流程使用 `api.Converter`：
 
 ```python
 import sys
@@ -138,39 +152,33 @@ result = converter.convert_file("doc.md", format="html")
 # result.success, result.output_path, result.size_bytes, result.error
 ```
 
-- **单文件**用 `convert_file()`
+- **单文件**优先用 `ConversionPipeline.run()`
+- **轻量转换或自定义流程**用 `convert_file()`
 - **整个目录**用 `convert_directory()`，会自动生成 `index.html` 索引
 - **需要多个格式**时依次调用（HTML+Word、HTML+PDF 等常见组合）
 
 ### 质量保障管线
 
-每次转换遵循 **preflight → convert → postflight → polish** 四部曲：
+每次转换遵循 **preflight → convert → postflight → polish → artifact validation → quality gate** 闭环：
 
 ```
-源 Markdown ──► preflight ──► auto-fix ──► convert ──► postflight ──► polish
-                  │                 │          │           │              │
-                  │ 语法级检查       │ 自动修复  │ Markdown  │ 输出检查     │ 输出修正
-                  │                 │          │  → 输出   │              │
-                  ├─ 断链/空链接     ├─ 中文标点 │           ├─ 占位符残留  ├─ 表格列宽适配
-                  ├─ 图片路径       ├─ 空链接   │           ├─ 流程图未渲染├─ 图片尺寸规范
-                  ├─ 过宽表格       ├─ 行尾空白 │           ├─ 图片断裂    ├─ 章节分页
-                  ├─ Mermaid 语法   └─ 连续空行 │           └─ 表格溢出    ├─ 字体一致性
-                  ├─ 标题层级跳跃              │                          ├─ 段落间距
-                  ├─ 空章节                    │  重试循环                └─ 尾部清理
-                  ├─ 代码块语言                │  postflight critical
-                  ├─ 重复标题                  │  → 修正源文件
-                  └─ 行尾空白                  │  → 重新转换
-                                              │  (最多2次)
+源 Markdown ─► normalize/preflight ─► convert ─► postflight ─► polish ─► artifact validation ─► quality gate
+                  │                      │          │             │             │                  │
+                  │ 源文件语法/结构       │ 三格式导出 │ 崩溃级检查   │ 渲染修正     │ 最终产物校验      │ pass/review/fail
+                  │ 拆表合并/自动修复     │ Word/HTML  │ 占位符/断图  │ 表格/图片/   │ 页数/结构/表格/   │ 交付建议
+                  │ 图片/标题/表格风险    │ PDF        │ 空目录/溢出  │ 字体/分页    │ 图片/正文
 ```
 
-**四步的职责边界**：
+**各步骤的职责边界**：
 
 | 步骤 | 检查对象 | 能发现什么 | 能修什么 | 不能修什么 |
 |------|----------|-----------|----------|-----------|
 | preflight | 源 Markdown 文本 | 语法错误、格式规范 | 中文标点、空链接、空白 | 图片缺失、语义错误 |
 | convert | AST → HTML → 输出 | — | — | CSS样式→Word格式的损耗 |
 | postflight | 输出文件 | 崩溃级问题、占位符 | — | 渲染细节（只读检查） |
-| polish | 输出文件 | 渲染质量损耗 | 列宽、图片大小、分页、字体、间距 | 源文件问题 |
+| polish | 输出文件 | 渲染质量损耗 | 列宽、图片大小、标题分页、字体、间距 | 源文件问题 |
+| artifact validation | 最终产物 | 结构/内容/表格/图片/页数异常 | — | 视觉细节 |
+| quality gate | 汇总报告 | 是否适合交付 | — | 替代人工最终审核 |
 
 **单文件推荐用 pipeline（一步到位）**：
 
@@ -180,7 +188,7 @@ from pipeline import ConversionPipeline
 pipeline = ConversionPipeline(max_retries=2)
 result = pipeline.run("doc.md", format="word")
 print(pipeline.format_result(result))
-# 自动完成 preflight → auto-fix → convert → postflight → retry → polish
+# 自动完成 preflight → auto-fix → convert → postflight → retry → polish → artifact validation → quality gate
 ```
 
 **批量/复杂场景手工编排（保持灵活性）**：
@@ -226,8 +234,24 @@ for result in batch.files:
 | `preflight_check` | 转换前，每次必调 | 扫描源文件 10 类问题 + 自动修复 |
 | `convert_document` | preflight 通过后 | 执行 Markdown→HTML/Word/PDF |
 | `postflight_check` | 转换后，每次必调 | 检查输出有无崩溃级问题 |
-| `polish_output` | postflight 后，每次必调 | 修正表格列宽、图片尺寸、分页、字体、间距 |
-| `ConversionPipeline` | 单文件转换首选 | 自动编排上述四步 + 重试闭环 |
+| `polish_output` | postflight 后，每次必调 | 修正表格列宽、图片尺寸、标题分页、字体、间距 |
+| `ArtifactValidator` | polish 后 | 校验 HTML/Word/PDF 最终产物结构、内容、表格、图片、页数 |
+| `VisualValidator` | artifact validation 内部 | LibreOffice/Poppler 可用时渲染 DOCX/PDF 页面，检查空白/内容稀疏页 |
+| `QualityReport` / `QualityGate` | 最终报告 | 生成 `.quality.json/.html`，判断 pass/review/fail，并输出 review 分类 |
+| `ConversionPipeline` | 单文件转换首选 | 自动编排完整质量闭环 + 重试 |
+| `RegressionRunner` | 样例目录回归 | 批量生成多格式产物和 `regression_summary.json` |
+
+## Skill 内置资料
+
+skill 包内保留了与运行和维护直接相关的资料：
+
+| 路径 | 用途 |
+|------|------|
+| `references/README.md` | 使用说明、CLI 参数、质量报告和回归入口 |
+| `references/architecture_design.md` | 当前架构、模块边界和质量闭环设计 |
+| `references/implementation_plan.md` | 已落地能力、风险和下一阶段计划 |
+| `references/requirements.txt` | Python 依赖清单 |
+| `samples/regression/` | 标准文件、接口规范、寄存器/位域、复杂表格样例 |
 
 ## 参数决策指南
 
@@ -263,7 +287,8 @@ Converter(
 ## 约束
 
 - 所有 Python 代码需 `sys.path.insert(0, '<skill_base>/scripts')` 在前
-- 始终使用 `api.Converter`，不要拼接 shell 命令
+- 单文件优先使用 `ConversionPipeline`；批量/特殊流程使用 `api.Converter`
 - 转换前确认输入文件存在
-- weasyprint 不可用时明确告知并建议替代方案
+- weasyprint 不可用时优先走 PDF 降级链；仅所有 PDF 后端都不可用时再建议 HTML 浏览器打印
+- DOCX/PDF 页面级视觉校验依赖 LibreOffice/Poppler；缺失时作为 review warning，而不是转换失败
 - 不修改 skill 源码，除非用户明确要求

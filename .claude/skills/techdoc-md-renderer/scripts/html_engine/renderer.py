@@ -10,6 +10,7 @@ import re
 
 from .inline_renderer import InlineRenderer
 from .context import RenderContext
+from analyzers.table_classifier import TableClassifier
 
 
 class HtmlRenderer:
@@ -39,6 +40,11 @@ class HtmlRenderer:
         self._flowcharts = []
         self._flowchart_counter = 0
         self._footnote_counter = 0
+
+        # 构建章节编号映射（用于目录和正文标题的一致性编号）
+        self._heading_number_map: dict = {}
+        self._build_heading_number_map(ast)
+        self._heading_seq = 0
 
         # 第一遍：扫描识别TOC表和修订记录表
         toc_table_idx = -1
@@ -118,13 +124,53 @@ class HtmlRenderer:
 
     # ---------- 标题 ----------
 
+    def _build_heading_number_map(self, ast: List[Dict]) -> None:
+        """构建章节编号映射，与 Word 多级编号一致。
+
+        在渲染前遍历 AST，为每个标题分配层级编号（如 1. / 1.1. / 1.1.1.），
+        存入 self._heading_number_map，key 为 heading_index。
+        """
+        counters = [0] * 6
+        heading_idx = 0
+        for node in ast:
+            if node.get('type') != 'heading':
+                continue
+            level = min(node.get('level', 1), 6)
+            content = self._clean_heading_text(node.get('content', ''))
+
+            # 跳过不参与编号的标题
+            if content == '目录' or self._is_revision_heading(content):
+                continue
+
+            # 递增当前层级，清零更深层级
+            idx = level - 1
+            counters[idx] += 1
+            for i in range(idx + 1, 6):
+                counters[i] = 0
+            # 跳层时补齐中间层级为 1
+            for i in range(0, idx):
+                if counters[i] == 0:
+                    counters[i] = 1
+
+            number_str = '.'.join(str(c) for c in counters[:level] if c > 0)
+            self._heading_number_map[heading_idx] = number_str
+            heading_idx += 1
+
     def _render_heading(self, node: Dict[str, Any]) -> str:
         level = min(node.get('level', 1), 6)
         content = node.get('content', '')
-        segments = node.get('children', [])
-        inner = self._inline.render(segments, content)
         tag = f"h{level}"
-        return f'<{tag} class="heading heading--{level}" id="{self._slugify(content)}">{inner}</{tag}>'
+
+        clean = self._clean_heading_text(content)
+        inner = self._escape(clean)
+        number = ''
+        if clean not in ('目录',) and not self._is_revision_heading(clean):
+            number = self._heading_number_map.get(self._heading_seq, '')
+            if number:
+                number += ' '
+            self._heading_seq += 1
+
+        return f'<{tag} class="heading heading--{level}" id="{self._slugify(clean)}">{number}{inner}</{tag}>'
 
     # ---------- 段落 ----------
 
@@ -190,18 +236,32 @@ class HtmlRenderer:
         if not valid_rows:
             return ""
 
-        # 优先使用 AST 中的 is_header 标记（来自 markdown-it thead 解析）
-        has_header = any(r.get('is_header') for r in valid_rows)
-        if not has_header:
+        # 内容特征校验优先于解析器的 is_header 标记：
+        # markdown-it 把 |---| 前的任何行都标记为 thead，但那个位置
+        # 放的可能是数据行（如定义表的首条术语）。用内容特征做最终判断。
+        if len(valid_rows) >= 2:
             has_header = self._is_likely_header(valid_rows)
+        else:
+            has_header = any(r.get('is_header') for r in valid_rows)
         cols = max(len(r.get('children', [])) for r in valid_rows)
         col_types = self._classify_columns(valid_rows, cols, 1 if has_header else 0)
+        explicit_kind = node.get('attributes', {}).get('table_kind', '')
+        analysis = TableClassifier.classify(
+            TableClassifier.rows_from_ast({"children": valid_rows}),
+            explicit_kind=explicit_kind,
+        )
+        table_classes = f"table table--data table--{analysis.kind}"
+        table_attrs = (
+            f'class="{table_classes}" '
+            f'data-table-kind="{analysis.kind}" '
+            f'data-table-confidence="{analysis.confidence:.2f}"'
+        )
 
         rows_html = []
         for i, row_node in enumerate(valid_rows):
             cells = row_node.get('children', [])
-            # 优先用 AST 标记，其次用首行推断
-            is_header = row_node.get('is_header', False) or (has_header and i == 0)
+            # 只用内容特征判断：parser 的 is_header 只是 |---| 语法的位置标记
+            is_header = has_header and i == 0
             cell_tag = "th" if is_header else "td"
             cells_html = []
             for j, cell_node in enumerate(cells):
@@ -211,14 +271,15 @@ class HtmlRenderer:
                 raw = cell_node.get('content', '') or ''
                 clean = self._clean_cell_text(raw)
                 segments = cell_node.get('children', [])
-                inner = self._inline.render(segments, clean)
+                raw_html = cell_node.get('attributes', {}).get('raw_html', '')
+                inner = raw_html if raw_html else self._inline.render(segments, clean)
                 classes = f"align-{align}"
                 cells_html.append(f'<{cell_tag} class="{classes}">{inner}</{cell_tag}>')
             rows_html.append(f'<tr>{"".join(cells_html)}</tr>')
 
-        return f'<table class="table table--data">\n<thead>\n{rows_html[0]}\n</thead>\n<tbody>\n' + \
+        return f'<table {table_attrs}>\n<thead>\n{rows_html[0]}\n</thead>\n<tbody>\n' + \
                "\n".join(rows_html[1:]) + '\n</tbody>\n</table>' if has_header else \
-               f'<table class="table table--data">\n<tbody>\n' + "\n".join(rows_html) + '\n</tbody>\n</table>'
+               f'<table {table_attrs}>\n<tbody>\n' + "\n".join(rows_html) + '\n</tbody>\n</table>'
 
     def _get_cell_align(self, cell_node: Dict, col_type: str, is_header: bool) -> str:
         md_align = cell_node.get('attributes', {}).get('align', '')
@@ -235,20 +296,73 @@ class HtmlRenderer:
         return 'left'
 
     def _is_likely_header(self, rows: List[Dict]) -> bool:
+        """判断首行是否为表头。
+
+        用内容特征而非仅长度做判断：真正的表头是「标签式」文本，
+        不含代码符号、不含数字主导、不含管道符等数据特征。
+        取前 3 行数据的中位数消除占位符（如 -）干扰。
+        """
         if len(rows) < 2:
             return False
         first = rows[0].get('children', [])
-        rest = rows[1].get('children', [])
-        if not first or not rest:
+        if not first:
             return False
-        first_lens = [len(self._clean_cell_text(c.get('content', '') or '')) for c in first]
-        rest_lens = [len(self._clean_cell_text(c.get('content', '') or '')) for c in rest]
+
+        first_texts = [self._clean_cell_text(c.get('content', '') or '') for c in first]
+        first_lens = [len(t) for t in first_texts]
         first_avg = sum(first_lens) / max(len(first_lens), 1)
-        rest_avg = sum(rest_lens) / max(len(rest_lens), 1)
-        # 第一行是短标签且数据行显著更长 → 表头
-        if first_avg <= 20 and rest_avg > 0 and first_avg < rest_avg * 0.6:
-            return True
-        return False
+
+        # 用前 3 个数据行取每列中位数，消弭占位符影响
+        data_rows = rows[1:min(len(rows), 4)]
+        col_medians = []
+        for ci in range(len(first_texts)):
+            col_vals = []
+            for dr in data_rows:
+                cells = dr.get('children', [])
+                if ci < len(cells):
+                    t = self._clean_cell_text(cells[ci].get('content', '') or '')
+                    if t.strip():
+                        col_vals.append(len(t))
+            if col_vals:
+                col_vals.sort()
+                col_medians.append(col_vals[len(col_vals) // 2])
+        if not col_medians:
+            return False
+        rest_median_avg = sum(col_medians) / len(col_medians)
+
+        # 宽松比率：首行短+数据行长 → 表头特征
+        # 0.80 替代原先的 0.65：避免“文件名称/归档索引 vs 软件命名规范/G-C047”
+        # 这类首尾均短的表格被误判为无表头。
+        ratio_ok = first_avg < rest_median_avg * 0.80
+        short_both = (first_avg <= 10 and rest_median_avg <= 18
+                      and first_avg < rest_median_avg)
+        if not (first_avg <= 25 and rest_median_avg > 0
+                and (ratio_ok or short_both)):
+            return False
+
+        # 内容特征：首行每个单元格都必须是"标签式"文本
+        import re
+        _code_pattern = re.compile(
+            r'[|{}\[\]<>]'            # 管道符/括号（数据分隔符）
+            r'|[_\.]{2,}'             # 连续下划线/点
+            r'|^\d+[\.\)、]\s*'        # 编号开头
+            r'|^[\d\s+\-*/%<=>|&^~]+$' # 纯数字/运算符
+        )
+        _word_pattern = re.compile(r'[\w一-鿿]')
+
+        header_cells = 0
+        for t in first_texts:
+            if not t.strip():
+                continue
+            if _code_pattern.search(t):
+                return False
+            if _word_pattern.search(t):
+                header_cells += 1
+
+        non_empty = [t for t in first_texts if t.strip()]
+        if not non_empty:
+            return False
+        return header_cells >= len(non_empty) * 0.5
 
     def _classify_columns(self, rows: List[Dict], col_count: int, header_count: int) -> List[str]:
         types = []
@@ -299,18 +413,31 @@ class HtmlRenderer:
         return False
 
     def _generate_toc_from_headings(self, ast: List[Dict]) -> str:
-        """从AST标题节点自动生成目录HTML"""
-        headings = [n for n in ast if n.get('type') == 'heading' and n.get('level', 1) <= 4]
-        if len(headings) < 2:
-            return ""
+        """从AST标题节点自动生成目录HTML（含章节编号，与Word一致）
+
+        编号索引与 _build_heading_number_map 同步：遍历全部标题节点，
+        仅将 h1-h3 且非目录/修订的标题写入 TOC，确保 TOC 中的编号与正文一致。
+        """
         items = []
-        for h in headings:
-            level = h.get('level', 1)
-            content = self._clean_heading_text(h.get('content', ''))
+        heading_idx = 0
+        for node in ast:
+            if node.get('type') != 'heading':
+                continue
+            level = node.get('level', 1)
+            content = self._clean_heading_text(node.get('content', ''))
+            if content == '目录' or self._is_revision_heading(content):
+                continue
+            number = self._heading_number_map.get(heading_idx, '')
+            heading_idx += 1
+            if level > 3:
+                continue
             slug = self._slugify(content)
+            label = f'{number} {content}' if number else content
             indent = "  " * (level - 1)
             items.append(f'{indent}<li class="toc-item toc-level-{level}">'
-                         f'<a href="#{slug}">{self._escape(content)}</a></li>')
+                         f'<a href="#{slug}">{self._escape(label)}</a></li>')
+        if not items:
+            return ""
         return '<ul class="toc-list">\n' + "\n".join(items) + '\n</ul>'
 
     @staticmethod
@@ -321,11 +448,12 @@ class HtmlRenderer:
 
     @staticmethod
     def _clean_heading_text(text: str) -> str:
-        """去除标题中的 Markdown 格式标记（**bold**、*italic*、`code` 等）"""
+        """去除标题中的 Markdown 格式标记和手写编号，与 Word 导出保持一致。"""
         text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
         text = re.sub(r'\*(.+?)\*', r'\1', text)
         text = re.sub(r'`(.+?)`', r'\1', text)
         text = re.sub(r'~~(.+?)~~', r'\1', text)
+        text = re.sub(r'^\s*\d+(?:\.\d+)*\.?\s+', '', text)
         return text.strip()
 
     def _is_revision_table_node(self, node: Dict) -> bool:

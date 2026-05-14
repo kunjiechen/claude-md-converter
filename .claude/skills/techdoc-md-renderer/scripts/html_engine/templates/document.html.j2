@@ -1,11 +1,11 @@
 {% extends "base.html.j2" %}
 
 {% block cover %}
-{% if cover_html %}
+{% if show_cover and cover_html %}
 <div class="cover">
 {{ cover_html }}
 </div>
-{% else %}
+{% elif show_cover %}
 <div class="cover">
 {% if company %}<p class="cover-company">{{ company }}</p>{% endif %}
 <h1 class="cover-title">{{ title }}</h1>

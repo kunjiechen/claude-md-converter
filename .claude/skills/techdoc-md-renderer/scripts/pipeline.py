@@ -61,6 +61,11 @@ class PipelineResult:
 
     # Polish
     polish_modified: int = 0
+    quality_status: Optional[str] = None
+    quality_score: Optional[int] = None
+    deliverable: Optional[bool] = None
+    quality_report_path: Optional[str] = None
+    quality_report_html_path: Optional[str] = None
 
     # Retry
     retries: int = 0
@@ -184,7 +189,9 @@ class ConversionPipeline:
                     attempt.preflight_fixed = result.preflight_fixed
 
                 # Convert
-                converter = Converter(**converter_options)
+                convert_options = dict(converter_options)
+                convert_options['quality_report'] = False
+                converter = Converter(**convert_options)
                 conversion = converter.convert_file(
                     str(input_path), format=format, output_path=output_path,
                 )
@@ -229,10 +236,6 @@ class ConversionPipeline:
                         result.attempts.append(attempt)
                         break
 
-                    attempt.reverted_source = True
-                    # 恢复备份，准备下一次尝试
-                    self._restore(input_path, backup)
-
                 result.attempts.append(attempt)
 
             # 最后一次尝试后仍有问题
@@ -244,6 +247,38 @@ class ConversionPipeline:
             if result.output_path and Path(result.output_path).exists():
                 polish_report = run_polish(result.output_path)
                 result.polish_modified = polish_report.modified
+                try:
+                    from analyzers.quality_report import (
+                        build_quality_report,
+                        write_quality_html_report,
+                        write_quality_report,
+                    )
+                    quality_payload = build_quality_report(str(input_path), result.output_path)
+                    gate = quality_payload.get('quality_gate') or {}
+                    result.quality_status = gate.get('status')
+                    result.quality_score = gate.get('score')
+                    result.deliverable = gate.get('deliverable')
+                    if converter_options.get('quality_report'):
+                        result.quality_report_path = write_quality_report(
+                            str(input_path),
+                            result.output_path,
+                            converter_options.get('quality_report_path'),
+                            quality_payload,
+                        )
+                        result.quality_report_html_path = write_quality_html_report(
+                            str(input_path),
+                            result.output_path,
+                            converter_options.get('quality_report_html_path'),
+                            quality_payload,
+                        )
+                        if result.conversion:
+                            result.conversion.quality_report_path = result.quality_report_path
+                            result.conversion.quality_report_html_path = result.quality_report_html_path
+                            result.conversion.quality_status = result.quality_status
+                            result.conversion.quality_score = result.quality_score
+                            result.conversion.deliverable = result.deliverable
+                except Exception:
+                    pass
 
         finally:
             # 恢复源文件
@@ -275,6 +310,14 @@ class ConversionPipeline:
         if result.polish_modified > 0:
             parts.append(f"  Polish: 修正 {result.polish_modified} 处渲染细节")
 
+        if result.quality_status:
+            deliverable = "可交付" if result.deliverable else "需复核"
+            parts.append(f"  质量门禁: {result.quality_status} / {result.quality_score} 分 / {deliverable}")
+            if result.quality_report_path:
+                parts.append(f"  质量报告: {result.quality_report_path}")
+            if result.quality_report_html_path:
+                parts.append(f"  可视化报告: {result.quality_report_html_path}")
+
         if result.error:
             parts.append(f"  错误: {result.error}")
 
@@ -298,31 +341,35 @@ class ConversionPipeline:
     ) -> bool:
         """根据 postflight 报告尝试修正源文件，返回是否做了任何修改"""
         content = input_path.read_text(encoding='utf-8')
+        new_content = content
         modified = False
 
         for issue in report.issues:
+            fixed = False
             if issue.category == 'placeholder':
                 # 占位符残留 → 源文件中可能有对应的错误写法
                 # 常见情况：[图片:xxx] → 图片引用路径不对
-                modified |= self._fix_placeholder_source(content, issue)
+                fixed, new_content = self._fix_placeholder_source(new_content, issue)
 
             elif issue.category == 'mermaid':
                 # Mermaid 在 Word/PDF 中未渲染 → 可能是中文标点问题
-                modified |= self._fix_mermaid_source(content, issue)
+                fixed, new_content = self._fix_mermaid_source(new_content, issue)
+
+            modified = modified or fixed
 
         if modified:
-            input_path.write_text(content, encoding='utf-8')
+            input_path.write_text(new_content, encoding='utf-8')
         return modified
 
     @staticmethod
-    def _fix_placeholder_source(content: str, issue) -> bool:
+    def _fix_placeholder_source(content: str, issue) -> tuple[bool, str]:
         """尝试修复导致占位符的源文件问题"""
         # 占位符通常源于图片路径问题或 math 语法错误
         # 源文件修复能力有限，主要靠 preflight 预防
-        return False  # 占位符问题难以自动追溯到源文件具体位置
+        return False, content  # 占位符问题难以自动追溯到源文件具体位置
 
     @staticmethod
-    def _fix_mermaid_source(content: str, issue) -> bool:
+    def _fix_mermaid_source(content: str, issue) -> tuple[bool, str]:
         """修正 mermaid 相关问题的源文件"""
         # Mermaid 在 Word/PDF 中出现原始代码 →
         # 可能是 mermaid 代码块中的中文标点导致渲染失败
@@ -338,4 +385,4 @@ class ConversionPipeline:
             if old in content:
                 content = content.replace(old, new)
                 modified = True
-        return modified
+        return modified, content

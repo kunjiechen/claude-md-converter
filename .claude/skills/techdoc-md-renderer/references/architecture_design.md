@@ -6,6 +6,7 @@
 |------|------|--------|----------|
 | A/0 | 2026.05.11 | kunjiechen | 初版：统一HTML渲染层架构设计 |
 | A/1 | 2026.05.12 | kunjiechen | 同步实际代码结构，移除未实现模块的引用 |
+| A/2 | 2026.05.13 | Codex | 同步产品级质量闭环、表格策略层、三格式一致性和清理后的模块边界 |
 
 ---
 
@@ -44,10 +45,24 @@
 ```
 scripts/
 ├── api.py                           # 统一 SDK：Converter 类
-├── cli.py                           # CLI 入口（薄层，委托 BatchProcessor）
+├── cli.py                           # CLI 入口：单文件/目录/质量报告/回归
 ├── parser.py                        # Markdown → AST（markdown-it-py + 插件）
 ├── batch_processor.py               # 批量处理 + 线程池
 ├── index_generator.py               # 索引页生成（Jinja2）
+├── pipeline.py                      # 单文件质量闭环管线
+├── preflight.py                     # 源文件预检与可修复项修正
+├── postflight.py                    # 输出产物崩溃级检查
+├── polisher.py                      # 输出产物格式修正
+├── regression_runner.py             # 多格式回归入口
+│
+├── analyzers/                       # 文档/表格识别与质量报告
+│   ├── markdown_normalizer.py       # Markdown 拆表合并等规范化
+│   ├── table_classifier.py          # 表格场景识别 + 布局策略
+│   ├── document_classifier.py       # 文档类型识别
+│   ├── artifact_validator.py        # 最终产物校验
+│   ├── quality_report.py            # JSON/HTML 质量报告
+│   ├── quality_gate.py              # pass/review/fail 门禁
+│   └── suggester.py                 # 低置信度建议层
 │
 ├── html_engine/                     # HTML 渲染引擎（核心中间层）
 │   ├── renderer.py                  # AST → 语义化 HTML 主渲染器
@@ -75,10 +90,17 @@ scripts/
 │   ├── html/
 │   │   └── exporter.py              # 自包含 HTML 导出（mermaid CDN）
 │   ├── word/
-│   │   ├── exporter.py              # HTML → python-docx（~1400 行）
+│   │   ├── exporter.py              # HTML → python-docx 主编排
+│   │   ├── table_builder.py         # Word 原生表格构建与策略列宽
+│   │   ├── list_builder.py          # 列表项目符号/缩进/任务项
+│   │   ├── image_builder.py         # 图片加载、DPI 尺寸和占位降级
+│   │   ├── section_builder.py       # TOC、修订记录、硬分页
+│   │   ├── inline_processor.py      # 内联格式处理
+│   │   ├── footnote_injector.py     # Word 脚注注入
+│   │   ├── style_config.py          # Word 样式配置
 │   │   └── style_mapper.py          # CSS class → Word 样式映射
 │   └── pdf/
-│       └── exporter.py              # HTML → weasyprint → PDF
+│       └── exporter.py              # HTML → PDF 多后端降级链
 │
 └── flowchart/                       # 流程图子系统
     ├── renderer.py                  # 渲染编排（Python/Kroki/mmdc 三路降级）
@@ -87,9 +109,52 @@ scripts/
     └── html_embed.py                # Mermaid.js CDN 浏览器端渲染
 ```
 
+### 2.1 智能自检查与表格场景层
+
+为支持标准文件、软件接口规范、芯片手册、寄存器表等高密度表格文档，在解析和导出之间增加轻量分析层：
+
+```
+Markdown/AST/HTML Table
+    │
+    ▼
+analyzers/
+├── table_classifier.py              # 表格场景识别 + 布局建议
+├── document_classifier.py           # 文档类型识别
+├── markdown_normalizer.py           # Markdown 表格规范化
+├── artifact_validator.py            # 最终产物结构校验
+├── visual_validator.py              # DOCX/PDF 页面级视觉校验
+├── quality_gate.py                  # pass/review/fail 门禁
+└── quality_report.py                # JSON/HTML 质量报告
+    │
+    ▼
+TableAnalysis(kind, confidence, layout, issues)
+    │
+    ├── HTML: 追加 table--{kind} class / data-table-kind
+    ├── Word: 选择固定列宽、表头重复、紧凑字体、代码列字体
+    └── Postflight: 输出可读性风险
+```
+
+设计原则：
+
+| 原则 | 说明 |
+|------|------|
+| 规则优先 | 默认使用确定性规则识别，保证批量转换可复现 |
+| AI 辅助 | 仅在规则置信度不足、表格语义模糊、疑似拆表时作为建议层 |
+| 策略注册 | 新增寄存器表、DTC 表、信号表时添加策略，不污染通用表格逻辑 |
+| Word-native | 表格、目录、修订履历、页眉页脚等 Word 特有对象走原生 OOXML 控制 |
+
+质量报告输出 `.quality.json` 和 `.quality.html`，包含：
+
+- 文档类型：`standard_spec`、`chip_manual`、`register_doc`、`api_spec`、`coding_standard`、`generic_techdoc`。
+- 表格清单：类型、置信度、行列数、布局策略、横向分节、代码列。
+- Markdown 规范化记录：自动合并的拆表位置。
+- preflight/postflight：转换前和转换后的结构化问题列表。
+- artifact validation：HTML/Word/PDF 最终产物结构校验、页数/正文/表格/图片等指标。
+- visual validation：依赖 LibreOffice/Poppler 时渲染 DOCX/PDF 页面，检测空白页和内容过少页；依赖缺失时输出 warning。
+- quality gate：汇总为 `pass` / `review` / `fail`、质量分数、`review_categories`、`review_level` 和是否建议交付。
+
 > 与初版设计相比，以下模块因实际实现中已整合而未单独创建：
 > - `ast_nodes.py` — AST 节点仍为 dict，类型常量定义在 parser.py
-> - `table_builder.py` — 表格逻辑内联在 word/exporter.py 中
 > - `flowchart/detector.py` — 检测逻辑已集成到 flowchart/renderer.py
 > - `templates/layouts/` — 封面/目录/修订记录均直接在 renderer.py 中生成 HTML 片段
 
@@ -98,17 +163,29 @@ scripts/
 ## 3. 数据流
 
 ```
-阶段 1: 解析
-  Markdown ──► markdown-it-py ──► AST (List[Dict])
+阶段 1: 规范化与解析
+  Markdown ──► MarkdownNormalizer(拆表合并/短分隔线识别) ──► markdown-it-py ──► AST (List[Dict])
 
-阶段 2: HTML 渲染
+阶段 2: 语义分析
+  AST 表格节点 / HTML table ──► TableClassifier ──► TableAnalysis
+
+阶段 3: HTML 渲染
   AST ──► HtmlRenderer ──► RenderContext（含 body/toc/revision/flowcharts）
+                 │
+                 └── 表格追加 table--{kind} / data-table-kind
+                 └── 标题清理手动编号后统一生成章节号，与 Word 标题规则对齐
 
-阶段 3: 导出
+阶段 4: 导出
   RenderContext + Jinja2 模板 ──► 完整 HTML 文档
       ├── Word:  BeautifulSoup4 解析 → python-docx 构建 .docx
-      ├── HTML:  直接写入 .html
-      └── PDF:   weasyprint 渲染 .pdf
+      ├── HTML:  直接写入 .html（默认无封面，目录→修订→正文）
+      └── PDF:   WeasyPrint 优先；失败后降级到 Chrome/Edge、wkhtmltopdf、LibreOffice、ReportLab
+阶段 5: 质量闭环
+  输出文件 ──► PostflightChecker ──► Polisher ──► ArtifactValidator(+VisualValidator) ──► QualityReport
+                                                                   │
+                                                                   └── QualityGate(pass/review/fail)
+阶段 6: 回归校验
+  样例目录 × 输出格式(html/word/pdf) ──► ConversionPipeline ──► regression_summary.json
 ```
 
 ### RenderContext 结构
@@ -151,6 +228,28 @@ class RenderContext:
 | hr | `<hr>` | `hr` |
 | definition_list | `<dl>` | `definition-list` |
 
+表格会额外追加场景 class 和 data 属性：
+
+| 表格场景 | CSS class | 识别依据 |
+|----------|-----------|----------|
+| 修订履历 | `table--revision` | 版次/修订内容/修订日期/修订人/备注 |
+| 术语定义 | `table--glossary` | 定义/缩写/描述，常见 2 列短词 + 长描述 |
+| 接口字段 | `table--interface` | 元素名字/字段/描述/示例 |
+| BNF 语法 | `table--bnf` | Symbol/Meaning/Example/Explanation |
+| 寄存器表 | `table--register` | Address/Offset/Bits/Field/Access/Reset/Description |
+| 位域表 | `table--bitfield` | Bit/Bits/Field/Access/Reset/Description |
+| 参数表 | `table--parameter` | Name/Type/Range/Default/Description |
+| 错误码表 | `table--error_code` | Code/Error/Meaning/Action |
+| 参考表 | `table--reference` | 短代码列 + Long-Name/中文释义列 |
+
+Markdown 中可使用显式标记覆盖自动分类：
+
+```markdown
+<!-- table: register -->
+| Offset | Bits | Field | Access | Reset | Description |
+|---|---|---|---|---|---|
+```
+
 ---
 
 ## 5. Mermaid 双模式策略
@@ -190,6 +289,7 @@ Mermaid 代码块
 │  python-docx 构建    │  逐元素：标题/段落/列表/表格/代码块/图片/公式
 │  - 模板样式映射      │
 │  - 内联格式嵌套渲染  │
+│  - 表格场景策略      │
 │  - 原生脚注注入      │
 │  - TOC 字段生成      │
 └──────────┬───────────┘
@@ -214,6 +314,31 @@ TABLE_CLASS_MAP = {
 }
 ```
 
+### 6.1 表格策略化渲染
+
+Word 表格不再只依赖通用等宽表格。`TableBuilder` 在构建时再次调用 `TableClassifier`，并根据 `TableAnalysis.layout` 执行：
+
+- 源头规范化：`MarkdownNormalizer` 在解析前合并被空行/重复分隔线拆开的连续 Markdown 表格，兼容 `:-` 这类短分隔线。
+- 固定布局：写入 `w:tblLayout type="fixed"`，关闭 Word 自动适配。
+- 列宽同步：同时写入 `w:tblGrid/w:gridCol` 和每个单元格 `w:tcW`。
+- 表头重复：对 thead 行写入 `w:tblHeader`，跨页可读。
+- 场景列宽：寄存器/位域/BNF/接口字段/术语表等分别使用不同列宽权重。
+- 紧凑模式：寄存器、位域等高密度表可使用较小字号。
+- 横向分节：寄存器、位域和 7 列参考表等宽表自动使用连续横向 section，后续内容恢复竖向。
+- 代码列：地址、字段、语法示例等列使用等宽字体。
+- 内联保真：Word 表格单元格直接渲染 HTML 内联节点，保留内联代码、强调；`<br>`/软换行提升为单元格多段落。
+- 长串换行：接口字段/语法定义等长代码单元格按语义分隔符插入显示换行，避免撑坏列宽。
+- HTML 表格兼容：Markdown 原生 `<table>` 在 parser 阶段转为内部表格 AST，单元格 `raw_html` 继续交由 HTML/Word 导出器渲染。
+- 单元格图片：Word 表格单元格支持本地图片和 data URI 图片插入，远程图片仍降级为占位文本。
+
+后续增强方向：
+
+- 建立表格回归样例库：寄存器、位域、接口字段、代码/列表/图片混合单元格。
+- 扩展 DOCX/PDF 页面级视觉校验，进一步识别孤立标题和表格截断。
+- 将 visual validation 的 warning 分类并显示在 quality gate 的 `review_categories.visual` 中。
+- 对超宽表自动拆分为“基础字段 + 描述字段”两张表或附录表。
+- 低置信度表格引入建议层，只输出建议，不直接改变可重复的规则结果。
+
 ---
 
 ## 7. 技术选型
@@ -224,7 +349,7 @@ TABLE_CLASS_MAP = {
 | HTML 模板 | **Jinja2** >=3.0 | Python 最成熟模板引擎，继承/宏/过滤器 |
 | HTML 解析 | **BeautifulSoup4** >=4.12 | Word 导出时解析 HTML DOM，提取 CSS class |
 | HTML→Word | **python-docx** >=0.8.11 | 深度使用，表格/页眉/样式/脚注均可通过 OXML 控制 |
-| HTML→PDF | **weasyprint** >=59.0 | CSS 打印支持好，@page 规则，与 HTML 导出共享样式 |
+| HTML→PDF | **weasyprint** >=59.0 + Chrome/Edge/wkhtmltopdf/LibreOffice/ReportLab 降级 | 优先高保真 CSS 打印；缺系统库时仍尽量生成可阅读 PDF |
 | CSS 主题 | CSS 变量 (Custom Properties) | 设计令牌统一管理，主题切换零成本 |
 
 **为什么不选 pandoc**：外部二进制依赖，不利于 Agent 化部署；python-docx 已深度集成，可精确控制 OXML 细节满足企业文档格式要求。
@@ -236,6 +361,8 @@ TABLE_CLASS_MAP = {
 | 风险 | 影响 | 缓解措施 |
 |------|------|----------|
 | 非 flowchart 图表无 Python 渲染 | 时序图/甘特图依赖外部工具 | 三路降级：Python → Kroki → mmdc |
-| weasyprint 未安装 | PDF 不可用 | 引导用户使用 HTML 格式 |
-| Word exporter 单体文件过大 | 维护困难 | 后续拆分为 footnotes/table/image 模块 |
-| 旧版代码残留 | 新用户困惑 | SKILL.md 明确使用 api.py Converter |
+| weasyprint 未安装 | 高保真 PDF 不可用 | 自动尝试 Chrome/Edge、wkhtmltopdf、LibreOffice、ReportLab 文本 PDF |
+| weasyprint 系统依赖缺失 | 高保真 PDF 不可用 | 自动降级并在质量报告中标记 `pdf_backend` warning |
+| Word 视觉分页无法纯 OOXML 完全判断 | 空白页/孤立标题漏检 | 已接入 LibreOffice 渲染钩子；环境缺依赖时输出 warning |
+| 规则误判复杂表格 | 列宽/表头不符合语义 | 显式表格标记 + suggester 建议层 + 回归样例 |
+| 旧版缓存/产物污染仓库 | 状态噪音、误提交 | 清理 `__pycache__`/质量产物并加入 `.gitignore` |

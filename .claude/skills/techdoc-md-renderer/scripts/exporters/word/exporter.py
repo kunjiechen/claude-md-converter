@@ -9,20 +9,10 @@ from pathlib import Path
 from datetime import date
 import re
 import copy
-import base64
-import tempfile
-import os
-
-try:
-    import requests
-    HAS_REQUESTS = True
-except ImportError:
-    requests = None  # type: ignore
-    HAS_REQUESTS = False
 
 from bs4 import BeautifulSoup, Tag, NavigableString
 from docx import Document
-from docx.shared import Inches, Pt, Cm, RGBColor
+from docx.shared import Inches, Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
@@ -33,9 +23,13 @@ from html_engine.context import RenderContext
 from html_engine.themes import ThemeRegistry
 from flowchart import FlowchartProcessor
 from .style_mapper import StyleMapper, ALIGN_MAP
+from .style_config import ensure_styles
 from .inline_processor import InlineProcessor
 from .table_builder import TableBuilder
 from .footnote_injector import FootnoteInjector
+from .list_builder import ListBuilder
+from .image_builder import ImageBuilder
+from .section_builder import SectionBuilder
 
 
 class WordExporter:
@@ -73,6 +67,9 @@ class WordExporter:
         self._inline_proc = InlineProcessor(self)
         self._table_builder = TableBuilder(self)
         self._footnote_injector = FootnoteInjector()
+        self._list_builder = ListBuilder(self)
+        self._image_builder = ImageBuilder()
+        self._section_builder = SectionBuilder(self)
 
         # HTML 渲染器
         self._html_renderer = HtmlRenderer(flowchart_processor=self._flowchart, mermaid_render_mode='server')
@@ -132,12 +129,7 @@ class WordExporter:
             # 表格
             body.insert(insert_pos + 1, copy.deepcopy(self._template_revision_table))
             # 尾部分页符
-            page_break_p = OxmlElement('w:p')
-            pb_r = OxmlElement('w:r')
-            br = OxmlElement('w:br')
-            br.set(qn('w:type'), 'page')
-            pb_r.append(br)
-            page_break_p.append(pb_r)
+            page_break_p = self._section_builder.page_break_paragraph()
             body.insert(insert_pos + 2, page_break_p)
         else:
             # MD 有修订数据 或 无模板 → HTML 渲染
@@ -218,6 +210,7 @@ class WordExporter:
             self._replace_header_fields(doc)
             self._clear_template_body(doc)
             self._log(f"已加载模板: {resolved}")
+            ensure_styles(doc)
             return doc
 
         doc = Document()
@@ -225,6 +218,7 @@ class WordExporter:
         style.font.name = self.font_name
         style.font.size = self.font_size
         style.element.rPr.rFonts.set(qn('w:eastAsia'), self.font_name)
+        ensure_styles(doc)
         return doc
 
     def _resolve_template_path(self) -> Optional[Path]:
@@ -384,101 +378,61 @@ class WordExporter:
             run.font.size = Pt({1: 22, 2: 16, 3: 14, 4: 12, 5: 10, 6: 10}.get(level, 12))
 
     def _add_paragraph(self, tag: Tag, doc: Document):
-        """添加段落（含内联格式）"""
-        style_name = StyleMapper.get_paragraph_style(tag)
+        """添加段落（含内联格式），根据内容自动选择最佳样式"""
+        style_name = StyleMapper.classify_paragraph(tag)
         para = doc.add_paragraph(style=style_name) if self._has_style(doc, style_name) else doc.add_paragraph()
         self._process_inline_runs(para, tag)
-        # 对齐
+        # 对齐（样式已指定时跳过覆盖）
         align = StyleMapper.get_alignment(tag)
-        if align is not None:
+        if align is not None and style_name not in ('公式',):
             para.alignment = align
 
     def _add_paragraph_text(self, doc: Document, text: str):
-        """添加纯文本段落（兜底）"""
-        para = doc.add_paragraph()
+        """添加纯文本段落（兜底），使用正文2样式"""
+        style_name = '正文2'
+        para = doc.add_paragraph(style=style_name) if self._has_style(doc, style_name) else doc.add_paragraph()
         para.add_run(text)
 
-    # 无序列表多层符号
-    _BULLET_CHARS = ['•', '◦', '▪', '▸']
-
     def _add_list(self, tag: Tag, doc: Document, level: int = 0):
-        """添加列表（ul/ol），使用 Unicode 项目符号/编号 + 悬挂缩进"""
-        is_ordered = tag.name == 'ol'
-        # 每级缩进 0.75cm，悬挂缩进 0.4cm（子弹/编号在文字左侧）
-        left = Cm(0.75 + level * 0.75)
-        hang = Cm(-0.4)
-        counter = 1
-
-        for li in tag.find_all('li', recursive=False):
-            para = doc.add_paragraph()
-            para.paragraph_format.left_indent = left
-            para.paragraph_format.first_line_indent = hang
-            # 无段间距
-            para.paragraph_format.space_before = Pt(0)
-            para.paragraph_format.space_after = Pt(0)
-
-            # 添加项目符号或编号
-            task_checked = None
-            for child in li.children:
-                if isinstance(child, NavigableString):
-                    continue
-                if child.name == 'input':
-                    task_checked = child.get('checked')
-                    break
-
-            if task_checked is not None:
-                prefix = '☑ ' if task_checked else '☐ '
-            elif is_ordered:
-                prefix = f'{counter}、'
-                counter += 1
-            else:
-                prefix = self._BULLET_CHARS[level % len(self._BULLET_CHARS)]
-
-            para.add_run(prefix + ' ')
-
-            # 渲染 li 的直接子元素（跳过嵌套列表和已处理的 input）
-            for child in li.children:
-                if isinstance(child, NavigableString):
-                    t = child.strip()
-                    if t:
-                        para.add_run(t)
-                elif child.name in ('ul', 'ol'):
-                    continue
-                elif child.name == 'input':
-                    continue  # 已作为 prefix 处理
-                else:
-                    self._render_single_inline(para, child)
-
-            # 如果段落仅含前缀无实质内容（纯嵌套列表情况），移除
-            content_runs = [r for r in para.runs if r.text.strip()]
-            if len(content_runs) == 1 and content_runs[0].text.strip() in (*self._BULLET_CHARS, '☑', '☐') or \
-               (len(content_runs) == 1 and content_runs[0].text.strip().endswith('、')):
-                body = para._p.getparent()
-                if body is not None:
-                    body.remove(para._p)
-
-            # 处理嵌套子列表
-            for nested in li.find_all(['ul', 'ol'], recursive=False):
-                self._add_list(nested, doc, level + 1)
+        """添加列表（委托给 ListBuilder）"""
+        self._list_builder.build(tag, doc, level)
 
     def _add_code_block(self, tag: Tag, doc: Document):
-        """添加代码块"""
+        """添加代码块。若内容为规范语法条目则使用「规范」样式，否则用代码格式。
+        混合内容（spec 行占比不足 40%）则逐行分类。"""
         code_tag = tag.find('code') if tag.name != 'code' else tag
         text = code_tag.get_text() if code_tag else tag.get_text()
 
+        # 判断是否为规范语法条目
+        spec_style = StyleMapper.classify_code_block(text)
+        if spec_style and self._has_style(doc, spec_style):
+            for line in text.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                para = doc.add_paragraph(style=spec_style)
+                para.add_run(line)
+            return
+
+        # 混合内容：逐行分类（规范行 → 规范样式，其余 → 正文2）
+        has_spec = self._has_style(doc, '规范')
+        has_body = self._has_style(doc, '正文2')
         for line in text.split('\n'):
-            para = doc.add_paragraph()
-            para.paragraph_format.left_indent = Cm(0.5)
-            run = para.add_run(line)
-            run.font.name = 'Courier New'
-            run.font.size = Pt(10)
-            # 灰底
-            shd = self._ensure_element(run._r, 'w:rPr', first=True, use_inner=True)
-            shd_el = OxmlElement('w:shd')
-            shd_el.set(qn('w:val'), 'clear')
-            shd_el.set(qn('w:color'), 'auto')
-            shd_el.set(qn('w:fill'), 'F5F5F5')
-            shd.insert(0, shd_el)
+            stripped = line.strip()
+            if not stripped:
+                continue
+            line_style = StyleMapper.classify_code_line(stripped)
+            if line_style == '规范' and has_spec:
+                para = doc.add_paragraph(style='规范')
+                para.add_run(stripped)
+            elif has_body:
+                para = doc.add_paragraph(style='正文2')
+                para.add_run(stripped)
+            else:
+                para = doc.add_paragraph()
+                run = para.add_run(stripped)
+                run.font.name = 'Courier New'
+                run.font.size = Pt(10)
 
     def _add_blockquote(self, tag: Tag, doc: Document, level: int = 0):
         """添加引用块，保留内联格式"""
@@ -491,7 +445,8 @@ class WordExporter:
 
             # 为引用块内元素统一添加缩进和左边框
             if name == 'p':
-                para = doc.add_paragraph()
+                body_style = '正文2'
+                para = doc.add_paragraph(style=body_style) if self._has_style(doc, body_style) else doc.add_paragraph()
                 self._process_inline_runs(para, child)
                 self._style_blockquote_para(para, level)
             elif name in ('ul', 'ol'):
@@ -528,111 +483,23 @@ class WordExporter:
         pBdr.append(left)
         pPr.append(pBdr)
 
-    # 图片最大宽度（内嵌 DPI 未知时回退到 96dpi，同 CSS 规范）
-    # A4=21cm，模板 margin 约 2cm → 内容区 ≈ 17cm，图片取 70% 留白
-    _MAX_IMAGE_W_EMU = int(12 * 360000)  # 12cm
-    _IMG_DPI_FALLBACK = 96
-
     def _add_image(self, tag: Tag, doc: Document):
-        """添加图片，等比缩放适配页面宽度（与 PDF max-width:100% 行为一致）"""
-        img_tag = tag.find('img')
-        if not img_tag:
-            return
-        src = img_tag.get('src', '')
-        alt = img_tag.get('alt', '')
-        caption = tag.find('figcaption')
-        caption_text = caption.get_text() if caption else alt
-
-        if not src:
-            if caption_text:
-                para = doc.add_paragraph()
-                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run = para.add_run(f'[图片: {caption_text}]')
-                run.font.italic = True
-            return
-
-        para = doc.add_paragraph()
-        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-        try:
-            img_w, img_h = (None, None)
-            image_arg = src
-
-            if src.startswith('data:'):
-                header, encoded = src.split(',', 1)
-                ext = header.split(';')[0].split('/')[-1] if 'image/' in header else 'png'
-                data = base64.b64decode(encoded)
-                img_w, img_h = self._get_image_physical_size(data)
-                with tempfile.NamedTemporaryFile(suffix=f'.{ext}', delete=False) as f:
-                    f.write(data)
-                    image_arg = f.name
-            elif src.startswith(('http://', 'https://')):
-                try:
-                    resp = requests.get(src, timeout=10)
-                    resp.raise_for_status()
-                    img_w, img_h = self._get_image_physical_size(resp.content)
-                except Exception:
-                    pass
-                image_arg = src
-            elif Path(src).exists():
-                img_w, img_h = self._get_image_physical_size_file(src)
-                image_arg = src
-            else:
-                run = para.add_run(f'[图片: {caption_text or src}]')
-                run.font.italic = True
-                return
-
-            # 仅当宽度超过内容区时等比缩小，否则保持原始大小（等同于 PDF max-width:100%）
-            if img_w and img_h:
-                if img_w > self._MAX_IMAGE_W_EMU:
-                    ratio = self._MAX_IMAGE_W_EMU / img_w
-                    img_w = self._MAX_IMAGE_W_EMU
-                    img_h = int(img_h * ratio)
-                para.add_run().add_picture(image_arg, width=img_w, height=img_h)
-            else:
-                para.add_run().add_picture(image_arg, width=self._MAX_IMAGE_W_EMU)
-
-            # 清理临时文件
-            if src.startswith('data:') and image_arg != src:
-                try:
-                    os.unlink(image_arg)
-                except OSError:
-                    pass
-        except Exception:
-            run = para.add_run(f'[图片: {caption_text or src}]')
-            run.font.italic = True
-
-        if caption_text:
-            cap_para = doc.add_paragraph()
-            cap_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            cap_run = cap_para.add_run(f'图 {caption_text}')
-            cap_run.font.size = Pt(9)
-            cap_run.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
+        """添加图片（委托给 ImageBuilder）"""
+        self._image_builder.add_image(tag, doc)
 
     @classmethod
     def _get_image_physical_size(cls, data: bytes):
-        """从图片字节数据获取物理尺寸（EMU），基于内嵌 DPI，与 CSS 渲染行为一致"""
-        from io import BytesIO
-        from PIL import Image
-        img = Image.open(BytesIO(data))
-        dpi = img.info.get('dpi', (cls._IMG_DPI_FALLBACK, cls._IMG_DPI_FALLBACK))
-        dpi_x = dpi[0] if dpi[0] and dpi[0] > 0 else cls._IMG_DPI_FALLBACK
-        dpi_y = dpi[1] if dpi[1] and dpi[1] > 0 else cls._IMG_DPI_FALLBACK
-        w_emu = int(img.width / dpi_x * 914400)
-        h_emu = int(img.height / dpi_y * 914400)
-        return w_emu, h_emu
+        """兼容旧调用：从图片字节数据获取物理尺寸（EMU）"""
+        return ImageBuilder._get_image_physical_size(data)
 
     @classmethod
     def _get_image_physical_size_file(cls, path: str):
-        """从文件获取图片物理尺寸（EMU）"""
-        with open(path, 'rb') as f:
-            return cls._get_image_physical_size(f.read())
+        """兼容旧调用：从文件获取图片物理尺寸（EMU）"""
+        return ImageBuilder._get_image_physical_size_file(path)
 
     def _add_flowchart_element(self, tag: Tag, doc: Document):
-        """添加流程图（已渲染为图片）"""
-        img_tag = tag.find('img')
-        if img_tag:
-            self._add_image(tag, doc)
+        """添加流程图（委托给 ImageBuilder）"""
+        self._image_builder.add_flowchart_element(tag, doc)
 
     def _add_hr(self, doc: Document):
         """添加水平分割线"""
@@ -648,29 +515,28 @@ class WordExporter:
         pPr.append(pBdr)
 
     def _add_pagebreak(self, doc: Document):
-        """插入硬分页符"""
-        para = doc.add_paragraph()
-        run = para.add_run()
-        br = OxmlElement('w:br')
-        br.set(qn('w:type'), 'page')
-        run._r.append(br)
+        """插入硬分页符（委托给 SectionBuilder）"""
+        self._section_builder.add_pagebreak(doc)
 
     def _add_definition_list(self, tag: Tag, doc: Document):
-        """添加定义列表"""
+        """添加定义列表，<dt> 使用「小标题」样式"""
+        sub_heading_style = '小标题'
+        has_sub_heading = self._has_style(doc, sub_heading_style)
         for child in tag.children:
             if isinstance(child, NavigableString):
                 continue
             if child.name == 'dt':
-                para = doc.add_paragraph()
+                para = doc.add_paragraph(style=sub_heading_style) if has_sub_heading else doc.add_paragraph()
                 run = para.add_run(child.get_text(strip=False).rstrip('；').rstrip(';'))
-                run.font.bold = True
+                if not has_sub_heading:
+                    run.font.bold = True
             elif child.name == 'dd':
                 para = doc.add_paragraph()
                 para.paragraph_format.left_indent = Cm(0.85)
                 para.add_run(child.get_text(strip=False))
 
     def _add_math_block(self, tag: Tag, doc: Document):
-        """添加数学公式块"""
+        """添加数学公式块，使用「公式」样式"""
         text = tag.get_text(strip=False)
         # 去除 \[ \] 定界符
         text = text.strip()
@@ -679,15 +545,10 @@ class WordExporter:
         if text.endswith('\\]'):
             text = text[:-2]
         text = text.strip()
-        para = doc.add_paragraph()
-        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        # 灰底公式框
-        pPr = para._p.get_or_add_pPr()
-        shd = OxmlElement('w:shd')
-        shd.set(qn('w:val'), 'clear')
-        shd.set(qn('w:color'), 'auto')
-        shd.set(qn('w:fill'), 'F5F5F5')
-        pPr.append(shd)
+        style_name = '公式'
+        para = doc.add_paragraph(style=style_name) if self._has_style(doc, style_name) else doc.add_paragraph()
+        if not self._has_style(doc, style_name):
+            para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = para.add_run(text)
         run.font.name = 'Cambria Math'
         run.font.italic = True
@@ -736,68 +597,8 @@ class WordExporter:
     # ============================================================
 
     def _insert_toc_field(self, doc: Document):
-        """在正文开头插入 Word 原生 TOC 字段（含目录标题和分页符）"""
-        body = doc.element.body
-
-        # 目录标题
-        title_para = OxmlElement('w:p')
-        title_pPr = OxmlElement('w:pPr')
-        title_pStyle = OxmlElement('w:pStyle')
-        title_pStyle.set(qn('w:val'), 'Heading1')
-        title_pPr.append(title_pStyle)
-        title_para.append(title_pPr)
-        title_run = OxmlElement('w:r')
-        title_t = OxmlElement('w:t')
-        title_t.set(qn('xml:space'), 'preserve')
-        title_t.text = '目录'
-        title_run.append(title_t)
-        title_para.append(title_run)
-        body.insert(0, title_para)
-
-        # TOC 字段
-        toc_para = OxmlElement('w:p')
-        toc_r = OxmlElement('w:r')
-        fldChar_begin = OxmlElement('w:fldChar')
-        fldChar_begin.set(qn('w:fldCharType'), 'begin')
-        toc_r.append(fldChar_begin)
-        toc_para.append(toc_r)
-
-        instr_r = OxmlElement('w:r')
-        instr = OxmlElement('w:instrText')
-        instr.set(qn('xml:space'), 'preserve')
-        instr.text = 'TOC \\o "1-2" \\h \\z \\u'
-        instr_r.append(instr)
-        toc_para.append(instr_r)
-
-        sep_r = OxmlElement('w:r')
-        fldChar_sep = OxmlElement('w:fldChar')
-        fldChar_sep.set(qn('w:fldCharType'), 'separate')
-        sep_r.append(fldChar_sep)
-        toc_para.append(sep_r)
-
-        end_r = OxmlElement('w:r')
-        fldChar_end = OxmlElement('w:fldChar')
-        fldChar_end.set(qn('w:fldCharType'), 'end')
-        end_r.append(fldChar_end)
-        toc_para.append(end_r)
-        body.insert(1, toc_para)
-
-        # 分页符
-        page_break_para = OxmlElement('w:p')
-        pb_r = OxmlElement('w:r')
-        br = OxmlElement('w:br')
-        br.set(qn('w:type'), 'page')
-        pb_r.append(br)
-        page_break_para.append(pb_r)
-        body.insert(2, page_break_para)
-
-        # 自动更新 TOC
-        settings = doc.settings.element
-        updateFields = settings.find(qn('w:updateFields'))
-        if updateFields is None:
-            updateFields = OxmlElement('w:updateFields')
-            settings.append(updateFields)
-        updateFields.set(qn('w:val'), 'true')
+        """在正文开头插入 Word 原生 TOC 字段（委托给 SectionBuilder）"""
+        self._section_builder.insert_toc_field(doc)
 
     @staticmethod
     def _generate_default_revision_html(context) -> str:
@@ -833,30 +634,8 @@ class WordExporter:
         )
 
     def _add_revision_section(self, doc: Document, revision_html: str):
-        """添加修订记录表（紧接 TOC 分页符之后）"""
-        if not revision_html:
-            return
-
-        soup = BeautifulSoup(revision_html, 'html.parser')
-        heading_tag = soup.find('h2')
-        table_tag = soup.find('table')
-
-        if not table_tag:
-            return
-
-        # 标题
-        if heading_tag:
-            self._add_heading(heading_tag, doc)
-
-        # 表格
-        self._table_builder.build(table_tag, doc)
-
-        # 尾部分页符（与正文分隔）
-        pb_para = doc.add_paragraph()
-        pb_run = pb_para.add_run()
-        br = OxmlElement('w:br')
-        br.set(qn('w:type'), 'page')
-        pb_run._r.append(br)
+        """添加修订记录表（委托给 SectionBuilder）"""
+        self._section_builder.add_revision_section(doc, revision_html)
 
     # ============================================================
     # 工具方法

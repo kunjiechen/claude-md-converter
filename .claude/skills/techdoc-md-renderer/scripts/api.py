@@ -30,7 +30,6 @@ from dataclasses import dataclass, field
 
 from exporters.html import HtmlExporter
 from exporters.word import WordExporter
-from exporters.pdf import PdfExporter
 from batch_processor import BatchProcessor
 
 
@@ -43,6 +42,11 @@ class ConversionResult:
     success: bool
     error: Optional[str] = None
     size_bytes: int = 0
+    quality_report_path: Optional[str] = None
+    quality_report_html_path: Optional[str] = None
+    quality_status: Optional[str] = None
+    quality_score: Optional[int] = None
+    deliverable: Optional[bool] = None
 
 
 @dataclass
@@ -111,6 +115,7 @@ class Converter:
             elif format == 'word':
                 exporter = WordExporter(**merged)
             else:
+                from exporters.pdf import PdfExporter
                 exporter = PdfExporter(**merged)
 
             out = Path(output_path) if output_path else None
@@ -121,12 +126,35 @@ class Converter:
                     ext = '.docx' if format == 'word' else f'.{format}'
                     out = Path(exporter.get_output_path(str(input_path), ext))
                 size = out.stat().st_size if out.exists() else 0
+                report_path = None
+                html_report_path = None
+                quality_status = None
+                quality_score = None
+                deliverable = None
+                if merged.get('quality_report'):
+                    from analyzers.quality_report import build_quality_report, write_quality_html_report, write_quality_report
+                    quality_payload = build_quality_report(str(input_path), str(out))
+                    gate = quality_payload.get('quality_gate') or {}
+                    quality_status = gate.get('status')
+                    quality_score = gate.get('score')
+                    deliverable = gate.get('deliverable')
+                    report_path = write_quality_report(
+                        str(input_path), str(out), merged.get('quality_report_path'), quality_payload
+                    )
+                    html_report_path = write_quality_html_report(
+                        str(input_path), str(out), merged.get('quality_report_html_path'), quality_payload
+                    )
                 return ConversionResult(
                     input_path=str(input_path),
                     output_path=str(out),
                     format=format,
                     success=True,
                     size_bytes=size,
+                    quality_report_path=report_path,
+                    quality_report_html_path=html_report_path,
+                    quality_status=quality_status,
+                    quality_score=quality_score,
+                    deliverable=deliverable,
                 )
             else:
                 return ConversionResult(
@@ -200,6 +228,11 @@ class Converter:
                 success=f.get('success', False),
                 error=f.get('message') if not f.get('success') else None,
                 size_bytes=size,
+                quality_report_path=f.get('quality_report'),
+                quality_report_html_path=f.get('quality_report_html'),
+                quality_status=f.get('quality_status'),
+                quality_score=f.get('quality_score'),
+                deliverable=f.get('deliverable'),
             ))
 
         actual_output_dir = Path(output_dir) if output_dir else Path(input_dir)

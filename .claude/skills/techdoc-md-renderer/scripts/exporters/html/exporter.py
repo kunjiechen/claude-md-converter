@@ -30,6 +30,7 @@ class HtmlExporter:
         self.doc_version = options.get('doc_version', '')
         self.doc_department = options.get('doc_department', '')
         self.doc_company = options.get('doc_company', '')
+        self.include_cover = options.get('include_cover', False)
 
         # 主题
         theme_name = options.get('theme', 'tech-doc')
@@ -113,6 +114,7 @@ class HtmlExporter:
             cover_html=context.cover_html,
             flowcharts=context.flowcharts,
             mermaid_js_cdn=context.mermaid_js_cdn,
+            show_cover=self.include_cover,
         )
 
         output_file.parent.mkdir(parents=True, exist_ok=True)

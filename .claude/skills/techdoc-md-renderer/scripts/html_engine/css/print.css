@@ -27,7 +27,21 @@ h1, h2, h3, h4 {
 }
 
 table.table {
-    page-break-inside: avoid;
+    page-break-inside: auto;
+    break-inside: auto;
+}
+
+table.table thead {
+    display: table-header-group;
+}
+
+table.table tfoot {
+    display: table-footer-group;
+}
+
+table.table tr {
+    page-break-inside: auto;
+    break-inside: auto;
 }
 
 .code-block {

@@ -14,7 +14,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from parser import MarkdownParser
 from exporters.html import HtmlExporter
 from exporters.word import WordExporter
-from exporters.pdf import PdfExporter
 
 
 class BatchProcessor:
@@ -41,6 +40,7 @@ class BatchProcessor:
         self.index_title = options.get('index_title', '文档索引')
         self.mermaid_render_mode = options.get('mermaid_render_mode', 'auto')
         self.inline_images = options.get('inline_images', False)
+        self.quality_report = options.get('quality_report', False)
 
         # 初始化解析器
         self.parser = MarkdownParser()
@@ -51,6 +51,7 @@ class BatchProcessor:
         elif self.format == 'html':
             self.converter = HtmlExporter(**options)
         else:
+            from exporters.pdf import PdfExporter
             self.converter = PdfExporter(**options)
 
         # 日志记录
@@ -181,7 +182,11 @@ class BatchProcessor:
             for future in as_completed(future_to_file):
                 md_file = future_to_file[future]
                 try:
-                    success, message = future.result()
+                    result_tuple = future.result()
+                    success, message = result_tuple[0], result_tuple[1]
+                    quality_report = result_tuple[2] if len(result_tuple) > 2 else ''
+                    quality_report_html = result_tuple[3] if len(result_tuple) > 3 else ''
+                    quality_gate = result_tuple[4] if len(result_tuple) > 4 else {}
                     output_file = self._get_output_path(md_file, output_path)
                     file_result = {
                         'input': str(md_file),
@@ -189,6 +194,14 @@ class BatchProcessor:
                         'success': success,
                         'message': message
                     }
+                    if quality_report:
+                        file_result['quality_report'] = quality_report
+                    if quality_report_html:
+                        file_result['quality_report_html'] = quality_report_html
+                    if quality_gate:
+                        file_result['quality_status'] = quality_gate.get('status')
+                        file_result['quality_score'] = quality_gate.get('score')
+                        file_result['deliverable'] = quality_gate.get('deliverable')
 
                     if success:
                         results['success'] += 1
@@ -254,6 +267,20 @@ class BatchProcessor:
             success = self.converter.convert(ast, str(output_path))
 
             if success:
+                report_path = ''
+                html_report_path = ''
+                quality_gate = {}
+                if self.quality_report:
+                    try:
+                        from analyzers.quality_report import build_quality_report, write_quality_html_report, write_quality_report
+                        quality_payload = build_quality_report(str(input_path), str(output_path))
+                        quality_gate = quality_payload.get('quality_gate') or {}
+                        report_path = write_quality_report(str(input_path), str(output_path), report=quality_payload)
+                        html_report_path = write_quality_html_report(str(input_path), str(output_path), report=quality_payload)
+                    except Exception as e:
+                        self._log("warning", f"质量报告生成失败: {e}")
+                if report_path:
+                    return True, f"转换成功: {output_path}", report_path, html_report_path, quality_gate
                 return True, f"转换成功: {output_path}"
             else:
                 return False, "转换失败"

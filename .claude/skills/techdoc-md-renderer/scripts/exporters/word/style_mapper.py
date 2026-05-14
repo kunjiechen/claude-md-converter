@@ -1,13 +1,15 @@
 """CSS class → Word 样式映射
 
 将 HTML 元素的 CSS class 映射为 Word 样式名和格式覆盖。
+正文段落（p/blockquote/pre/dl）默认映射到「正文2」样式，
+更精确的样式由 classify_paragraph() 根据内容决定。
 """
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from bs4 import Tag
 
 
-# 块级元素 → Word 样式名
+# 块级元素 → Word 样式名（默认值，更精确的分类见 classify_paragraph）
 ELEMENT_STYLE_MAP: Dict[Tuple[str, ...], str] = {
     ('h1',): 'Heading 1',
     ('h2',): 'Heading 2',
@@ -15,10 +17,10 @@ ELEMENT_STYLE_MAP: Dict[Tuple[str, ...], str] = {
     ('h4',): 'Heading 4',
     ('h5',): 'Heading 5',
     ('h6',): 'Heading 6',
-    ('p',): 'Normal',
-    ('blockquote',): 'Normal',
-    ('pre',): 'Normal',
-    ('dl',): 'Normal',
+    ('p',): '正文2',
+    ('blockquote',): '正文2',
+    ('pre',): '正文2',
+    ('dl',): '正文2',
 }
 
 # 表格 class → Word 表格样式名
@@ -114,6 +116,30 @@ class StyleMapper:
         return tag.get('class', [])
 
     @classmethod
+    def classify_paragraph(cls, tag: Tag) -> str:
+        """根据 HTML 段落内容和结构返回精确的 Word 样式名。
+        委托给 style_config.classify_paragraph() 执行内容分析。
+        """
+        from .style_config import classify_paragraph as _classify
+        return _classify(tag)
+
+    @classmethod
+    def classify_code_block(cls, code_text: str) -> Optional[str]:
+        """判断代码块内容是否为规范语法条目。
+        委托给 style_config.classify_code_block() 执行模式匹配。
+        """
+        from .style_config import classify_code_block as _classify
+        return _classify(code_text)
+
+    @classmethod
+    def classify_code_line(cls, text: str) -> str:
+        """对代码块中的单行分类，返回样式名。
+        委托给 style_config.classify_code_line() 执行判断。
+        """
+        from .style_config import classify_code_line as _classify
+        return _classify(text)
+
+    @classmethod
     def is_thead_row(cls, tag: Tag) -> bool:
         """检查 tr 是否在 thead 中"""
         return tag.parent and tag.parent.name == 'thead'
@@ -134,6 +160,7 @@ class StyleMapper:
             yield {
                 'text': text,
                 'tag': cell.name,
+                'element': cell,
                 'align': align_cls,
                 'colspan': int(cell.get('colspan', 1)),
                 'rowspan': int(cell.get('rowspan', 1)),

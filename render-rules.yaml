@@ -1,367 +1,471 @@
-version: "1.0"
-scope: "implemented behavior of current techdoc-md-renderer"
+schema_version: "2.0"
+status: "target-spec"
+source: "derived from current implementation, extraction report, and rule quality review"
 
-pipeline:
-  canonical_ir: "semantic HTML generated from custom dict AST"
-  stages:
-    - normalize_markdown_text
-    - markdown_it_parse
-    - token_to_ast
-    - ast_semantic_analysis
-    - html_render
-    - export_html_word_pdf
-    - postflight
-    - polish
-    - artifact_validation
-    - quality_gate
-  default_single_file_entrypoint: "ConversionPipeline.run"
-  source_autofix_can_modify_markdown: true
+defaults:
+  document_profile: automotive_formal_spec
+  page_profile: a4_cn_formal
+  locale: zh-CN
+  unsupported_policy: warn_and_preserve_text
+  source_fix_mode: patch
+
+document_profiles:
+  automotive_formal_spec:
+    description: "Formal Chinese technical specification for automotive electronics."
+    structure:
+      heading_numbering:
+        enabled: true
+        strip_source_numbering: true
+      toc:
+        enabled: true
+        levels_html: [1, 2, 3]
+        levels_word: [1, 2]
+      revision_history:
+        enabled: true
+        required: true
+      cover:
+        enabled: false
+    typography_profile: cn_formal
+    table_profiles: [standard, register, interface, bnf, error_code]
+    quality_gate: formal_delivery
+
+  chip_register_manual:
+    description: "Chip manual/register map profile."
+    structure:
+      heading_numbering:
+        enabled: true
+        strip_source_numbering: true
+      toc:
+        enabled: true
+        levels_html: [1, 2, 3]
+        levels_word: [1, 2, 3]
+      revision_history:
+        enabled: true
+        required: false
+    typography_profile: cn_formal
+    table_profiles: [register, bitfield, parameter]
+    quality_gate: formal_delivery
+
+  lightweight_tech_note:
+    description: "Lightweight Markdown technical note."
+    structure:
+      heading_numbering:
+        enabled: false
+      toc:
+        enabled: auto
+        min_headings: 4
+      revision_history:
+        enabled: false
+    typography_profile: web_default
+    table_profiles: [standard]
+    quality_gate: readable_delivery
+
+page_profiles:
+  a4_cn_formal:
+    size: A4
+    margins:
+      top: 2.5cm
+      right: 2.5cm
+      bottom: 2.5cm
+      left: 2.5cm
+    content_box:
+      derive_from_page_and_margins: true
+    footer:
+      page_number:
+        enabled: true
+        position: bottom-center
+        first_page: false
+
+typography_profiles:
+  cn_formal:
+    fonts:
+      body: ["楷体", "KaiTi", "serif"]
+      heading: ["黑体", "SimHei", "sans-serif"]
+      table: ["Microsoft YaHei", "微软雅黑", "sans-serif"]
+      code: ["Consolas", "Courier New", "monospace"]
+      math: ["Cambria Math"]
+    sizes:
+      body: 12pt
+      h1: 22pt
+      h2: 16pt
+      h3: 14pt
+      h4: 12pt
+      table: 10pt
+      code: 10pt
+      footnote: 9pt
+    approximate_metrics:
+      # Used only when renderer/font metrics are unavailable.
+      cjk_advance: 1.0em
+      kana_advance: 0.92em
+      latin_advance: 0.5em
+
+  web_default:
+    fonts:
+      body: ["system-ui", "sans-serif"]
+      heading: ["system-ui", "sans-serif"]
+      table: ["system-ui", "sans-serif"]
+      code: ["ui-monospace", "SFMono-Regular", "Consolas", "monospace"]
+    sizes:
+      body: 16px
+      table: 14px
+      code: 14px
 
 markdown:
-  parser: "markdown-it-py"
-  enabled_rules:
+  parser: markdown-it-py
+  enabled:
     table: true
     strikethrough: true
-  plugins:
-    - footnote
-    - texmath
-    - deflist
-  custom_preprocess:
+    footnote: true
+    texmath: true
+    deflist: true
+  extensions:
     highlight:
-      source: "==text=="
-      target: "<mark>text</mark>"
+      syntax: "==text=="
       excludes_fenced_code: true
+      implementation: planned_token_rule
     pagebreak:
-      source: "<!-- pagebreak -->"
-      ast_node: "pagebreak"
-    split_table_merge:
-      max_blank_gap: 2
-      requires_same_column_count: true
-      removes_repeated_delimiter_row: true
-  control_comments:
-    table_kind: "<!-- table: KIND -->"
-    prose_compact: "<!-- prose: compact -->"
-    prose_preserve: "<!-- prose: preserve -->"
-    prose_end: "<!-- /prose -->"
+      syntax: "<!-- pagebreak -->"
+      node: PageBreak
+    table_kind_marker:
+      syntax: "<!-- table: {kind} -->"
+      validates_against_content: true
+    prose_policy_marker:
+      syntax: "<!-- prose: {policy} -->"
+      policies: [compact, preserve]
+  raw_html:
+    block_policy: warn_and_preserve_text
+    table_blocks: normalize_to_table_model
+    inline_known_tags: [kbd, sub, sup, mark, del, ins, u, em, strong, code, br]
+    unknown_inline_policy: preserve_text_with_warning
 
-html:
-  template_order:
-    - optional_cover
-    - generated_toc
-    - revision_section
-    - document_body
-  language: "zh-CN"
-  viewport: "width=device-width, initial-scale=1.0"
-  default_theme: "tech-doc"
-  heading_numbering:
-    generated: true
-    strip_manual_number_prefix: true
-    skip_titles:
-      - "目录"
-    skip_revision_headings: true
-    toc_levels: [1, 2, 3]
-  css_tokens:
-    font_body: ["楷体", "KaiTi", "serif"]
-    font_heading: ["黑体", "SimHei", "sans-serif"]
-    font_code: ["Courier New", "Consolas", "monospace"]
-    font_table: ["Microsoft YaHei", "微软雅黑", "sans-serif"]
-    body_size: "12pt"
-    h1_size: "22pt"
-    h2_size: "16pt"
-    h3_size: "14pt"
-    h4_size: "12pt"
-    code_size: "10pt"
-    table_size: "10pt"
-    footnote_size: "9pt"
-    page_width: "210mm"
-    page_margin: "2.5cm"
-  block_classes:
-    paragraph: "paragraph paragraph--{prose_kind}"
-    compact_group: "prose-group prose-group--compact"
-    table: "table table--data table--{kind}"
-    code_block: "code-block"
-    image: "image"
-    flowchart: "flowchart"
-    pagebreak: "pagebreak"
+document_model:
+  planned: true
+  no_silent_content_loss: true
+  block_nodes:
+    - Heading
+    - Paragraph
+    - List
+    - Table
+    - CodeBlock
+    - BlockQuote
+    - Figure
+    - Diagram
+    - MathBlock
+    - FootnoteDefinition
+    - DefinitionList
+    - PageBreak
+    - RawHtmlBlock
+    - UnsupportedBlock
+  inline_nodes:
+    - Text
+    - Emphasis
+    - Strong
+    - Strike
+    - Underline
+    - Highlight
+    - InlineCode
+    - Link
+    - Image
+    - Math
+    - FootnoteReference
+    - Break
 
 paragraphs:
-  short_cjk_limit: 42
-  short_latin_limit: 90
-  compact_min_run: 2
-  compact_max_run: 8
-  note_prefixes: ["注意", "注", "例如", "示例", "参考", "说明", "备注"]
-  clause_prefix_pattern: "^([（(]?[0-9一二三四五六七八九十]+[）).、]|[a-zA-Z][).、])"
-  grouping_scope: "top-level paragraphs only"
-  html_rules:
-    body:
-      text_align: "justify"
-      text_justify: "inter-ideograph"
-      margin_bottom: "6pt"
-    compact:
-      text_align: "start"
-      margin_bottom: "2pt"
-      page_break_inside: "avoid"
-    note:
-      text_align: "start"
-      margin_bottom: "3pt"
+  compacting:
+    enabled_by_profile: true
+    explicit_policy_overrides_heuristic: true
+    classifiers:
+      short_cjk:
+        max_visual_chars: 42
+        justification: "legacy heuristic; profile-tunable"
+      short_latin:
+        max_visual_chars: 90
+        justification: "legacy heuristic; profile-tunable"
+      note_prefix:
+        prefixes: ["注意", "注", "例如", "示例", "参考", "说明", "备注"]
+      clause_prefix:
+        pattern: "^([（(]?[0-9一二三四五六七八九十]+[）).、]|[a-zA-Z][).、])"
+    run_limits:
+      min: 2
+      max: 8
+    diagnostics:
+      emit_reason_codes: true
+      low_confidence_action: review
+  mixed_inline_images:
+    policy: preserve
+    fallback: diagnostic_placeholder
 
 tables:
-  content_width_dxa: 9000
-  landscape_content_width_dxa: 13200
-  explicit_marker_overrides_detection: true
-  supported_kinds:
-    revision:
-      confidence_explicit: 1.0
-      weights: [0.06, 0.40, 0.14, 0.10, 0.24, 0.06]
-      center_columns: [0, 2, 3, 4]
+  classification:
+    explicit_marker:
+      enabled: true
+      on_conflict: warn
+    low_confidence:
+      default_kind: generic
+      action: review
+    emit:
+      confidence: true
+      evidence: true
+  kinds:
     register:
-      weights: [0.10, 0.11, 0.18, 0.09, 0.10, 0.42]
-      code_columns: [0, 1, 2, 3, 4]
-      center_columns: [0, 1, 3, 4]
-      font_size_pt: 8.5
-      landscape_rule: "col_count >= 7 and estimated_width > 0.85 * 9000"
+      headers_any: [address, addr, offset, register, reg, bits, bit, field, access, reset, description]
+      content_patterns: [hex_address, bit_range, access_mode]
+      min_score: 0.75
+      roles:
+        offset: address
+        bits: bit_range
+        field: field_name
+        access: access
+        reset: reset
+        description: description
     bitfield:
-      weights: [0.12, 0.22, 0.10, 0.10, 0.46]
-      code_columns: [0, 1, 2, 3]
-      center_columns: [0, 1, 3, 4]
-      font_size_pt: "8.5 if wide else 9 for 7+ columns"
+      headers_any: [bits, bit, field, name, access, reset, description]
+      content_patterns: [bit_range, access_mode]
+      min_score: 0.75
+      roles:
+        bits: bit_range
+        name: field_name
+        access: access
+        reset: reset
+        description: description
     bnf:
-      weights: [0.17, 0.22, 0.34, 0.27]
-      code_columns: [0, 2]
-      center_columns: [0]
+      headers_any: [symbol, meaning, example, explanation]
+      min_score: 0.70
+      roles:
+        symbol: symbol
+        example: code_example
+        meaning: description
+        explanation: description
     interface:
-      weights: [0.24, 0.52, 0.24]
-      code_columns: [1, 2]
+      headers_any: [field, element_name, type, required, description, example]
+      min_score: 0.70
     parameter:
-      weights: [0.22, 0.14, 0.14, 0.14, 0.36]
-      code_columns: [0, 1]
+      headers_any: [name, parameter, type, range, default, description]
+      min_score: 0.70
     error_code:
-      weights: [0.14, 0.22, 0.40, 0.24]
-      code_columns: [0]
+      headers_any: [code, error, meaning, action, description]
+      min_score: 0.70
     glossary:
-      weights: [0.22, 0.78]
-      code_columns: [0]
-    reference:
-      weights: [0.16, 0.26, 0.28, 0.30]
-      code_columns: [0, 1]
-      landscape_rule: "7-column variants may switch landscape by width estimate"
-    generic:
-      confidence: 0.50
-      widths: "equal"
-  width_adaptation:
-    extra_column_weight: 0.12
-    inserted_before_last_weight: true
-    min_scaled_column_dxa: 500
-  html_style:
-    width: "100%"
-    border_collapse: "collapse"
-    border: "0.5px solid #808080"
-    header_background: "#D9D9D9"
-    padding: "4px 8px"
-    vertical_align: "middle"
-  word_style:
-    native_docx_table: true
-    fixed_layout: true
-    autofit: false
-    border_color: "808080"
-    border_size: 4
-    header_fill: "D9D9D9"
-    cell_margin_dxa:
-      top: 40
-      bottom: 40
-      left: 60
-      right: 60
-    repeat_header_rows: true
-    zero_cell_paragraph_indent: true
-    zero_cell_paragraph_spacing: true
-    code_font: "Consolas"
-    long_code_wrap:
-      threshold_chars: 120
-      target_line_chars: 48
-  polish:
-    min_col_dxa: 600
-    padding_ratio: 1.12
-    char_width_dxa:
-      cjk: 240
-      kana: 220
-      other: 120
-    header_margin_guard_dxa: 180
-    two_col_max_single_ratio: 0.78
-    two_col_min_edge_ratio: 0.18
-    three_col_max_single_ratio: 0.68
-    three_col_min_edge_ratio: 0.12
-    harmonize_consecutive_same_col_tables: true
-
-word:
-  template_resolution:
-    - "explicit template option"
-    - "first templates/*.docx"
-    - "scripts/default_template.docx"
-  default_font: "宋体"
-  default_font_size_pt: 12
-  toc:
-    inserted: true
-    instruction: 'TOC \o "1-2" \h \z \u'
-    update_fields_on_open: true
-    pagebreak_after: true
-  revision:
-    always_present: true
-    default_title: "文件修订履历表"
-    columns: ["版次", "修订人", "修订原因", "修订内容", "修订日期", "备注"]
-    pagebreak_after: true
-  paragraph_styles:
-    正文2: {inherits_normal: true}
-    正文3: {first_line_indent_cm: 0.74}
-    短正文: {space_after_pt: 3, line_spacing: 1.15}
-    紧凑正文: {space_after_pt: 2, line_spacing: 1.1}
-    小标题: {bold: true}
-    规范: {font_name: "Consolas", font_size_pt: 10.5, first_line_indent_cm: 0.74}
-    公式: {bold: true, alignment: "center"}
-  lists:
-    native_numbering: false
-    bullets: ["●", "◆", "■", "▸"]
-    ordered_pattern: "{n}、"
-    task_checked: "☑"
-    task_unchecked: "☐"
-    left_indent_cm_base: 0.85
-    left_indent_cm_per_level: 0.65
-    hanging_indent_cm: -0.6
-  code_blocks:
-    render_as_block_container: false
-    spec_ratio_threshold: 0.4
-    spec_style: "规范"
-    fallback_style: "正文2"
-  polish:
-    image_max_width_cm: 15
-    remove_heading_page_break_before: true
-    keep_next_heading_levels: [1, 2, 3]
-    fill_missing_fonts:
-      west: "Calibri"
-      cjk: "Microsoft YaHei"
-      mono: "Consolas"
-      mono_cjk: "Microsoft YaHei"
-
-pdf:
-  source: "same full HTML as HTML exporter, plus print.css"
-  page:
-    size: "A4"
-    margin: "2.5cm"
-    footer_page_number: "bottom-center except first page"
-  backend_chain:
-    - weasyprint
-    - chromium
-    - wkhtmltopdf
-    - libreoffice
-    - reportlab_text
-  backend_sidecar: ".pdf.backend.json"
-  print_rules:
-    headings_avoid_break_after: [h1, h2, h3, h4]
-    cover_pagebreak_after: true
-    toc_pagebreak_after: true
-    revision_pagebreak_after: true
-    explicit_pagebreak_hidden: true
-    figures_avoid_break_inside: true
-    code_blocks_avoid_break_inside: true
-    table_header_repeat: true
-  reportlab_text_fallback:
-    preserves_layout: false
-    includes_images: false
-    includes_tables_as_geometry: false
-    font: "STSong-Light"
-    body_size_pt: 10
+      headers_any: [term, definition, abbreviation, description, 术语, 定义, 缩写, 描述]
+      min_score: 0.65
+    revision:
+      headers_any: [version, date, 版次, 修订内容, 修订日期, 修订人, 备注]
+      min_score: 0.80
+  header_detection:
+    preserve_parser_header_as_evidence: true
+    produce_confidence: true
+    fallback: keep_parser_header_and_review
+  layout:
+    strategy: role_and_content_based
+    derive_content_width_from_page_profile: true
+    use_font_metrics_when_available: true
+    role_constraints:
+      address: {font_role: code, align: center, min_width: 8mm, wrap: false}
+      bit_range: {font_role: code, align: center, min_width: 10mm, wrap: false}
+      access: {font_role: code, align: center, min_width: 8mm, wrap: false}
+      reset: {font_role: code, align: center, min_width: 10mm, wrap: false}
+      field_name: {font_role: code, align: left, min_width: 18mm, wrap: soft}
+      symbol: {font_role: code, align: center, min_width: 15mm, wrap: false}
+      code_example: {font_role: code, align: left, min_width: 20mm, wrap: semantic}
+      description: {font_role: body, align: left, min_width: 25mm, flex: 3, wrap: true}
+    overflow_policy:
+      steps:
+        - wrap_allowed_columns
+        - apply_compact_table_font
+        - switch_landscape_if_profile_allows
+        - emit_overflow_review_diagnostic
+    landscape:
+      enabled_by_profile: true
+      trigger: overflow_after_wrapping
+      threshold: content_box_ratio
+      ratio: 0.92
 
 images:
-  html:
-    block_wrapper: "figure.image"
-    centered: true
-    max_width: "100%"
-    caption: "alt text"
-    inline_images_option: true
-  word:
-    centered: true
-    dpi_fallback: 96
-    initial_max_width_cm: 12
-    polished_max_width_cm: 15
-    caption_prefix: "图 "
-    caption_size_pt: 9
-    caption_color: "808080"
-    missing_placeholder: "[图片: {text}]"
-  risks:
-    - "mixed paragraph text plus image may lose text"
-    - "relative path inlining can fail because renderer input_dir is not always set"
-    - "SVG support depends on target backend"
+  resolver:
+    base_dir: source_document_dir
+    data_uri: allow
+    remote:
+      default_policy: warn
+      fetch_when: profile_allows
+    missing:
+      required_asset: fail
+      optional_asset: review
+  layout:
+    block:
+      max_width: content_box
+      preserve_aspect_ratio: true
+      align: center
+      caption:
+        source: alt_or_title
+        enabled_by_profile: true
+    inline:
+      preserve_in_flow: true
+      fallback: diagnostic_placeholder
+  svg:
+    html: preserve
+    word: convert_to_png_or_warn
+    pdf: backend_capability
+
+code_blocks:
+  preserve_block_identity: true
+  language_required: false
+  missing_language:
+    severity: warning
+  grammar_or_spec_style:
+    default: preserve_as_code
+    explicit_marker: "<!-- code: grammar -->"
+    heuristic:
+      enabled: true
+      requires_high_confidence: true
+      legacy_ratio_threshold: 0.4
+      on_low_confidence: preserve_as_code
+  fallback:
+    missing_code_style: monospace_paragraph_style
 
 diagrams:
   detection:
-    mermaid_keywords: ["graph ", "flowchart ", "sequenceDiagram", "classDiagram", "stateDiagram", "gantt", "pie", "journey"]
-    plantuml_prefixes: ["@startuml", "@startgantt"]
-  html_auto_mode: "browser"
-  word_pdf_mode: "server"
-  server_chain:
-    - "python_painter for mermaid flowchart"
-    - "python chart_renderers for sequence/gantt/pie"
-    - "kroki if use_kroki=true"
-    - "mmdc or plantuml cli"
-    - "raw pre.mermaid fallback"
-  python_flowchart_painter:
-    node_min_width_px: 120
-    node_min_height_px: 50
-    node_padding_px: 20
-    horizontal_spacing_px: 60
-    vertical_spacing_px: 50
-    max_height_px: 300
-    fill_color: [255, 255, 255]
-    line_color: [0, 0, 0]
-    font_size_px: 14
+    prefer_fence_language: true
+    content_fallback:
+      mermaid_keywords: ["graph ", "flowchart ", "sequenceDiagram", "classDiagram", "stateDiagram", "gantt", "pie", "journey"]
+      plantuml_prefixes: ["@startuml", "@startgantt"]
+  mermaid:
+    html:
+      mode: browser
+      fidelity: conformant
+    paged_outputs:
+      mode: prerender
+      required_for_formal_delivery: true
+      fallbacks: [python_flowchart, python_basic_chart, kroki, mmdc]
+      raw_source_fallback:
+        fidelity: non_conformant
+        action: fail_or_review_by_profile
+  plantuml:
+    paged_outputs:
+      mode: prerender
+      fallbacks: [plantuml_cli, kroki]
   preflight_fixes:
     chinese_quotes: true
     chinese_colon: true
     chinese_semicolon_in_sequence: true
     chinese_parentheses: true
 
+word:
+  renderer: direct_docx_adapter
+  template_resolution:
+    - explicit_template
+    - profile_template
+    - built_in_default_template
+  styles:
+    create_missing: true
+    semantic_map:
+      body: 正文2
+      note: 正文3
+      compact: 紧凑正文
+      subheading: 小标题
+      grammar: 规范
+      code: CodeBlock
+      formula_text_fallback: 公式
+    fallback_style: Normal
+  toc:
+    field_based: true
+    update_required_diagnostic: warning
+  lists:
+    preferred: native_numbering
+    fallback: manual_prefix_with_review
+  tables:
+    use_native_docx_tables: true
+    apply_layout_plan: true
+    repeat_header_rows: true
+  images:
+    apply_layout_plan: true
+  math:
+    current_support: text_fallback
+    planned: omml
+
+pdf:
+  renderer: paged_output_adapter
+  source:
+    current: html_intermediate
+    target: document_model_with_policy
+  page_profile: default
+  backends:
+    weasyprint:
+      fidelity: conformant
+    chromium:
+      fidelity: conformant_or_review
+    wkhtmltopdf:
+      fidelity: review
+    libreoffice:
+      fidelity: review
+    reportlab_text:
+      fidelity: non_conformant
+      use: readable_last_resort
+  sidecar:
+    enabled: true
+    fields: [backend, fidelity, warnings]
+  fallback:
+    on_backend_failure: try_next
+    on_non_conformant: mark_quality_gate_review_or_fail
+
+html:
+  renderer: semantic_html_adapter
+  classes_from_semantics: true
+  css_from_typography_profile: true
+  tables:
+    overflow_wrapper: true
+    horizontal_scroll: true
+  diagrams:
+    mermaid_browser_runtime: true
+  assets:
+    inline_images_when_requested: true
+
 preflight:
+  source_fix_modes: [dry_run, patch, in_place_with_backup]
   checks:
-    - broken_links
-    - image_refs
-    - wide_tables
-    - split_tables
-    - unescaped_angle_placeholders
-    - mermaid_syntax
-    - heading_gaps
-    - empty_sections
-    - trailing_whitespace
-    - codeblock_language
-    - duplicate_headings
-    - consecutive_blank_lines
-  wide_table_warning_columns_gt: 6
-  consecutive_blank_lines_max: 2
-  codeblock_language_missing: "warning"
-  heading_level_gap: "warning"
-  missing_local_image: "error"
+    broken_links: {severity: error, fixable_empty_href: true}
+    image_refs: {missing_local: error, remote: warning}
+    wide_tables: {severity: warning, rule: layout_overflow_risk}
+    split_tables: {severity: warning, fixable: planned}
+    unescaped_angle_placeholders: {severity: warning}
+    mermaid_syntax: {severity: error_or_warning, fixable_punctuation: true}
+    heading_gaps: {severity: warning}
+    empty_sections: {severity: info}
+    trailing_whitespace: {severity: warning, fixable: true}
+    codeblock_language: {severity: warning}
+    duplicate_headings: {severity: warning}
+    consecutive_blank_lines: {severity: warning, fixable: true}
 
 postflight:
-  placeholder_patterns:
-    - "\\[图片[:：]\\s*[^\\]]*\\]"
-    - "\\[公式\\]"
-    - "\\[数学[:：]\\s*[^\\]]*\\]"
-    - "\\[table[:：]\\s*[^\\]]*\\]"
-  html:
-    missing_local_image: "warning"
-    mermaid_without_js: "critical"
-  docx:
-    mermaid_raw_code: "critical"
-    table_cols_gt_6_and_width_lte_9500: "warning"
-    long_cell_gt_180_and_unbroken_gt_120: "warning"
-    toc_maybe_unupdated: "warning"
-  pdf:
-    file_size_lt_bytes_critical: 1024
+  diagnostics_required: true
+  checks:
+    unresolved_placeholders: critical
+    missing_html_images: warning
+    unrendered_diagrams_in_paged_output: critical
+    table_overflow_risk: warning
+    pdf_too_small: critical
+    degraded_backend: warning
+    word_toc_needs_update: warning
 
-unsupported:
-  - "arbitrary raw HTML blocks except table/control comments"
-  - "true Word OMML math"
-  - "MathJax/KaTeX script injection"
-  - "full Mermaid grammar in Python renderer"
-  - "robust SVG conversion for Word"
-  - "rich nested Markdown inside pipe table cells"
-  - "multi-image mixed paragraphs"
-  - "native Word list numbering for regular lists"
+quality_gates:
+  formal_delivery:
+    pass_requires:
+      - no_content_loss
+      - no_missing_required_assets
+      - no_unrendered_required_diagrams
+      - no_critical_postflight
+    review_on:
+      - low_confidence_table
+      - degraded_pdf_backend
+      - word_toc_needs_update
+      - layout_overflow_risk
+    fail_on:
+      - silent_content_loss
+      - missing_required_asset
+      - non_conformant_pdf_for_pdf_request
+      - unrendered_diagram
+  readable_delivery:
+    fail_on:
+      - silent_content_loss
+    review_on:
+      - missing_optional_asset
+      - degraded_backend

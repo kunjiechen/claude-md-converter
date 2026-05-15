@@ -1,395 +1,304 @@
-# TechDoc Markdown Renderer Specification
+# TechDoc Rendering Specification
 
-This specification describes the behavior implemented in the current project. It is inferred from the parser, HTML renderer, Word/PDF exporters, analyzers, quality pipeline, styles, and regression samples. It describes actual behavior, including intentional conventions, fallbacks, and current limitations.
+Status: formalized target specification based on the current implementation, rule extraction report, and rule quality review. Items marked `planned` are not implemented yet and must not be treated as current behavior.
 
-## 1. Rendering Pipeline Overview
+## 1. Scope
 
-The renderer uses a shared intermediate representation:
+TechDoc renders Markdown technical documents for automotive electronics, embedded systems, chip manuals, register maps, interface specifications, and formal Chinese technical standards.
+
+The target architecture is:
 
 ```text
 Markdown
-  -> normalize_markdown_text()
-  -> markdown-it-py tokens
-  -> custom dict AST
-  -> semantic HTML fragments
-  -> HTML / Word / PDF exporters
-  -> postflight + polish + quality gate
+  -> Parser AST
+  -> Normalized Document Model
+  -> Render Policy
+  -> HTML Renderer
+  -> Word Renderer
+  -> PDF Renderer
 ```
 
-The internal AST is a list of dictionaries. Common node types are `heading`, `paragraph`, `list`, `list_item`, `table`, `table_row`, `table_cell`, `code_block`, `blockquote`, `image`, `hr`, `math_block`, `math_inline`, `definition_list`, `footnote_block`, `pagebreak`, `table_marker`, and `prose_marker`.
-
-HTML is the canonical rendering layer. Word is produced by rendering the AST to semantic HTML, parsing that HTML with BeautifulSoup, then building native DOCX objects with python-docx. PDF is produced from the same HTML and CSS, preferably with WeasyPrint. This is intentional: common semantics are centralized in `HtmlRenderer`, while Word-specific layout is handled after HTML by dedicated builders.
-
-The quality pipeline is:
-
-```text
-preflight -> auto_fix -> convert -> postflight -> retry -> polish -> artifact validation -> quality gate
-```
-
-Preflight operates on Markdown source. Postflight checks generated artifacts for crash-level defects. Polisher changes outputs in place, mainly DOCX. Quality reports aggregate structural validation and delivery status.
-
-## 2. Markdown Support Matrix
-
-| Feature | Support Level | Implementation | Constraints |
-|---|---:|---|---|
-| ATX headings `#`-`######` | Full | markdown-it heading tokens -> `heading` AST -> numbered HTML/Word headings | Manual numeric prefixes are stripped before output numbering. `目录` and revision headings are excluded from numbering. |
-| Paragraphs | Full | `paragraph` AST with inline segments | Top-level only participates in compact paragraph grouping. |
-| Emphasis / strong | Full | inline tokens -> `em` / `strong` HTML -> Word runs | Nested formatting is partially supported; Word applies formatting to the last generated run for nested cases. |
-| Strikethrough | Full | markdown-it `strikethrough` enabled -> `<del>` | Word maps to run strike. |
-| Highlight `==text==` | Custom | Regex preprocessing to `<mark>text</mark>` outside fenced code | Requires non-space content at both ends. |
-| Underline | HTML-only syntax | `<ins>` or `<u>` parsed by inline HTML handler | Markdown native underline is not supported. |
-| Inline code | Full | `code_inline` -> `<code class="code-inline">` | Word uses Courier New 10pt with gray shading. |
-| Links | Basic | markdown-it links -> `<a href>` / Word hyperlink | Link text formatting inside links is flattened to text/code content. Empty links are auto-fixed to `#` by preflight. |
-| Images | Partial | Markdown image paragraph becomes `image` node; inline image becomes `<img class="inline-image">` or placeholder in Word | A paragraph containing any image is reduced to the first image node. Mixed text plus image in normal paragraph is lossy. |
-| Tables | Strong | markdown-it tables and raw HTML tables -> table AST -> classified semantic table | Markdown pipe tables and full raw `<table>...</table>` blocks supported. Complex HTML cell content is preserved as `raw_html` for HTML/Word table cells. |
-| Raw HTML table | Partial | BeautifulSoup extracts rows/cells, colspan/rowspan/raw_html | Only table blocks are converted. Other block HTML is ignored unless fallback text appears later in Word. |
-| Raw inline HTML | Partial | Parses `kbd`, `sub`, `sup`, `mark`, `del`, `ins`, `u`, `em`, `strong`, `code`, `br` | Generic inline HTML is dropped or reduced. Parser is regex-based and fragile for nested/attribute-heavy HTML. |
-| Lists | Full | Ordered/unordered lists with nested list nodes | Word uses manual bullets/numbers, not native list fields. Ordered list marker is `1、`. |
-| Task lists | Custom partial | Detects `[x]`, `[X]`, `[ ]` at list item start | Not a markdown-it task plugin. Only first paragraph in list item is detected. |
-| Blockquotes | Full | Recursive blockquote AST -> HTML blockquote -> Word indented paragraphs | Word adds left border and indent. |
-| Fenced code blocks | Full | `fence` -> `code_block` with language info | Word does not preserve a code block container; it converts lines to either `规范` or `正文2`. |
-| Indented code blocks | Full | `code_block` -> `code_block` AST, no language | Preflight warns only fenced blocks without language. |
-| Mermaid | Strong for flowcharts, partial for other diagrams | FlowchartProcessor detects mermaid keywords. HTML uses browser rendering by default. Word/PDF use server prerender chain. | Python painter only supports `graph`/`flowchart`; sequence/gantt/pie have custom renderer; class/state/journey fall back to Kroki/mmdc or raw `<pre>`. |
-| PlantUML | Partial | Detected by `@startuml` / `@startgantt`, rendered via plantuml CLI or Kroki | No native Python renderer. |
-| LaTeX math | Partial | `texmath_plugin`; block -> `\[...\]`, inline -> `\(...\)` | No MathJax injection is implemented in HTML. Word renders plain italic Cambria Math text, not real OMML equations. |
-| Footnotes | Partial/strong in Word | footnote plugin; Word injects native footnotes | HTML renders footnote list. Some footnote formatting is flattened. |
-| Definition lists | Basic | deflist plugin -> `<dl class="definition-list">` | Definitions are plain text only; nested blocks are not preserved. |
-| Horizontal rule | Full | `hr` -> styled rule | `<!-- pagebreak -->` is a separate custom control. |
-| Hard page break | Custom | `<!-- pagebreak -->` -> `[PAGEBREAK]` -> `pagebreak` AST -> `<hr class="pagebreak">` | Only this exact comment form is recognized. |
-| Manual TOC | Special | TOC table or paragraph range is detected and skipped; generated TOC replaces it | Paragraph TOC requires a `目录` paragraph followed by at least 3 `](#...)` link paragraphs. |
-| Raw HTML blocks other than table/control comments | Unsupported | ignored by parser | Content may disappear. |
-
-## 3. Table Rendering Rules
-
-Tables are classified before final layout. Explicit markers override detection:
-
-```markdown
-<!-- table: register -->
-| Offset | Bits | Field | Access | Reset | Description |
-```
-
-Supported table kinds are `revision`, `glossary`, `interface`, `bnf`, `register`, `bitfield`, `parameter`, `error_code`, `reference`, and `generic`.
-
-### Header Detection
-
-The HTML renderer does not blindly trust markdown-it's first-row table header. If there are at least two rows, it re-checks whether the first row looks like labels:
-
-- first-row average length must be short enough relative to following row medians;
-- first row must not contain data-like characters such as pipes, brackets, angle brackets, pure operators/numbers, or numeric prefixes;
-- at least half of non-empty first-row cells must contain word/CJK characters.
-
-This is intentional because converted Word/PDF Markdown often puts data rows before delimiter-looking rows.
-
-### Classification and Widths
-
-All widths are DXA. Portrait content width is `9000`; landscape content width is `13200`.
-
-| Kind | Default Weights | Special Rules |
-|---|---|---|
-| revision | `0.06, 0.40, 0.14, 0.10, 0.24, 0.06` | Revision table is normalized to six columns: 版次, 修订人, 修订原因, 修订内容, 修订日期, 备注. |
-| register | `0.10, 0.11, 0.18, 0.09, 0.10, 0.42` | Code columns 0-4, center columns 0,1,3,4, default 8.5pt. Landscape only if estimated width exceeds 85% of portrait width. |
-| bitfield | `0.12, 0.22, 0.10, 0.10, 0.46` | Code columns 0-3, center columns 0,1,3,4, 8.5-9pt depending width. |
-| bnf | `0.17, 0.22, 0.34, 0.27` | Code columns 0 and 2; center column 0. |
-| interface | `0.24, 0.52, 0.24` | Code columns 1 and 2. |
-| parameter | `0.22, 0.14, 0.14, 0.14, 0.36` | Code columns 0 and 1. |
-| error_code | `0.14, 0.22, 0.40, 0.24` | Code column 0. |
-| glossary | `0.22, 0.78` | Code column 0. |
-| reference | `0.16, 0.26, 0.28, 0.30` | Code columns 0 and 1; 7-column wide variants may use landscape and 8.5pt. |
-| generic | equal columns | Confidence 0.50. |
-
-When the actual column count differs from the weights, extra columns are inserted before the last wide column at weight `0.12`; fewer columns truncate weights.
-
-### Word Table Rules
-
-Word tables are native DOCX tables:
-
-- `table.autofit = False`.
-- Layout type is fixed.
-- Default border is single gray `808080`, `w:sz=4` (0.5pt).
-- Header fill is `D9D9D9`.
-- Cell margins are top/bottom `40` dxa and left/right `60` dxa.
-- Cells are vertically centered.
-- Header rows are repeated with `w:tblHeader=true`.
-- Header text is bold and centered.
-- Table paragraphs use zero indent, zero before/after spacing, 240 line height.
-- Code columns use Consolas.
-- Long code-like cells over 120 characters are visibly wrapped at semantic breakpoints or every 48 characters.
-- Colspan and rowspan from raw HTML tables are mapped to `gridSpan` and `vMerge`.
-- Images inside table cells are inserted at about 1 inch wide; remote images are cached when `requests` is available.
-
-After conversion, the DOCX polisher recalculates column widths from actual text:
+Current implementation note: the project currently uses `markdown-it-py -> dict AST -> semantic HTML -> HTML/DOCX/PDF`. The normalized document model and explicit render policy are planned refactors.
+
+## 2. Core Principles
+
+1. No silent content loss.
+2. Semantic rules must be renderer-independent.
+3. Layout rules must be constraint-based where possible.
+4. Domain conventions must live in named document profiles.
+5. Renderer-specific units such as DXA, EMU, CSS px, and Word style names must be adapter concerns.
+6. Every heuristic must expose confidence and reason codes.
+7. Fallback output must declare fidelity level: `conformant`, `review`, or `non_conformant`.
 
-- CJK char width estimate: `240` dxa.
-- Japanese kana estimate: `220` dxa.
-- Other characters: `120` dxa.
-- Minimum column width: `600` dxa.
-- Practical width padding ratio: `1.12`.
-- Header cells get extra non-wrapping protection with about `180` dxa margin.
-- 2-column tables cap any single column at 78% and edge columns at minimum 18%.
-- 3-column tables cap any single column at 68% and edge columns at minimum 12%.
-- Consecutive tables with the same column count and only empty paragraphs between them are harmonized to aligned column grids.
+## 3. Markdown Support Matrix
 
-### HTML/PDF Table Rules
+| Feature | Status | Current Behavior | Target Rule |
+|---|---|---|---|
+| ATX headings | supported | Parsed into `heading`; manual numeric prefixes stripped during rendering; auto numbering applied except TOC/revision headings. | Heading numbering is controlled by document profile. Source numbering is stripped only when profile enables it. |
+| Paragraphs | supported | Paragraphs may contain inline segments, but image paragraphs are promoted to the first image. | Paragraphs preserve all inline children. Mixed image/text is supported or diagnosed by policy. |
+| Bold/italic/strikethrough | supported | Inline tokens become HTML and Word runs. | Preserve nested inline semantics in the document model. |
+| Highlight `==text==` | supported custom | Regex preprocess outside fenced code. | Implement as a Markdown extension rule or explicit inline normalization step. |
+| Underline | partial | Supported through raw inline HTML `<u>`/`<ins>`. | Keep as raw inline semantic `underline`; unsupported forms are preserved as text with warning. |
+| Inline code | supported | HTML `code-inline`; Word Courier New shaded run. | Semantic `InlineCode`; renderer maps style. |
+| Links | supported | Link text flattened in some cases. Empty links auto-fixed to `#`. | Preserve rich inline link children; empty links emit warning and configurable fix. |
+| Images | partial | Block image figure; inline image support is weak; mixed paragraph content can be lost. | Preserve block and inline images through an asset resolver. |
+| Pipe tables | supported | Parsed and classified; layout handled by HTML/DOCX builders and polisher. | Table semantic model with column roles and layout plan. |
+| Raw HTML table | supported partial | BeautifulSoup extracts rows, cells, colspan, rowspan, and raw cell HTML. | Normalize to typed table model; preserve supported inline/block content. |
+| Raw HTML blocks | unsupported current | Non-table blocks are ignored. | Policy: preserve sanitized HTML, text fallback, or reject with diagnostic. |
+| Lists | supported | Nested lists; Word uses manual prefixes. | Prefer native list semantics per renderer; manual prefixes only fallback. |
+| Task lists | supported custom partial | `[x]`, `[X]`, `[ ]` at list item start. | Normalize to `TaskListItem(checked)`. |
+| Blockquotes | supported | Recursive blockquotes; Word indented with left border. | Semantic quote block with renderer-specific styling. |
+| Fenced code blocks | supported | HTML code block; Word converts lines to body/spec paragraphs. | Preserve code block identity by default. Grammar/spec rendering requires explicit policy or high-confidence semantic tag. |
+| Indented code blocks | supported | Code block without language. | Same as fenced code, with unknown language. |
+| Mermaid | supported partial | HTML browser mode; Word/PDF server prerender fallback chain. | Diagram node with required fidelity policy per target. |
+| PlantUML | supported partial | CLI/Kroki fallback only. | Diagram node with backend capability contract. |
+| Math | partial | texmath parsed; HTML emits delimiters; Word emits italic Cambria Math text, not OMML. | Mark as `planned` for true math rendering. Current output is text fallback. |
+| Footnotes | supported partial | HTML footnote list; Word native footnotes. | Semantic footnotes; renderer maps native if available. |
+| Definition lists | supported basic | Plain text terms/descriptions. | Preserve inline content; nested blocks planned. |
+| Horizontal rule | supported | Styled rule. | Semantic thematic break. |
+| Hard page break | supported custom | `<!-- pagebreak -->` becomes pagebreak. | Semantic `PageBreak`; renderer maps target. |
+| Manual TOC | supported special | Chinese `目录` table/paragraph range detected and skipped. | Source TOC detection is optional; generated TOC is profile-controlled. |
 
-HTML tables use:
+## 4. Document Structure Rules
 
-- `width: 100%`
-- `border-collapse: collapse`
-- table font: Microsoft YaHei / 微软雅黑
-- font size: 10pt
-- border: 0.5px solid `#808080`
-- header background: `#D9D9D9`
-- padding: `4px 8px`
-- data attributes: `data-table-kind` and `data-table-confidence`
+Document furniture is profile-driven:
 
-PDF print CSS changes table pagination to allow breaks inside large tables:
+- `automotive_formal_spec`: TOC enabled, revision history required, heading numbering enabled.
+- `chip_register_manual`: TOC enabled, register/bitfield table strategy enabled, revision history optional or required by profile.
+- `lightweight_tech_note`: TOC automatic, revision disabled by default.
 
-- table `page-break-inside: auto`
-- `thead { display: table-header-group }`
-- `tfoot { display: table-footer-group }`
-- rows are allowed to break if backend supports it.
+Fallback:
 
-The HTML polisher attempts to wrap data/revision tables in `div.table-wrapper`, but the current implementation only writes the file if another HTML modification occurred. This is accidental technical debt.
+- If required furniture is missing, generate it when enough metadata exists.
+- If metadata is insufficient, emit a review diagnostic rather than inventing unverifiable values.
 
-## 4. PDF Rendering Rules
+## 5. Table Rules
 
-PDF output is HTML + CSS rendered through a backend chain:
+### 5.1 Semantic Classification
 
-1. WeasyPrint.
-2. Chromium/Edge headless print.
-3. wkhtmltopdf.
-4. LibreOffice HTML to PDF.
-5. ReportLab text-only fallback.
+Supported table kinds:
 
-PDF page CSS:
+- `revision`
+- `register`
+- `bitfield`
+- `bnf`
+- `interface`
+- `parameter`
+- `error_code`
+- `glossary`
+- `reference`
+- `generic`
 
-- `@page size: A4`
-- margin: `2.5cm`
-- page number at bottom center, 9pt, body font
-- first page has no page number
-- body max-width disabled and padding removed
-- headings h1-h4 avoid page break after
-- cover, TOC, and revision sections force page break after
-- explicit pagebreak `<hr class="pagebreak">` becomes a hidden forced page break
-- figures, images, flowcharts, and code blocks avoid internal page breaks
+Classification inputs:
 
-PDF uses server-mode diagram rendering. If diagram prerendering fails, raw `<pre class="mermaid">` may enter the PDF HTML. No Mermaid JS is injected for PDF.
+- explicit marker `<!-- table: kind -->`;
+- headers;
+- content patterns such as hex addresses, bit ranges, access modes, parameter types;
+- surrounding section title, planned;
+- document profile.
 
-The ReportLab fallback is intentionally low fidelity: it extracts text from headings, paragraphs, list items, and table cells, uses A4, STSong-Light for Chinese, 10pt body text, and does not preserve table geometry, images, CSS, or diagrams. A `.pdf.backend.json` sidecar records backend, degradation status, and warnings.
+Rule:
 
-## 5. Word Rendering Rules
+- Explicit marker overrides automatic detection, but conflicting content emits a warning.
+- Automatic classification must return `kind`, `confidence`, and `evidence`.
+- Low-confidence tables remain `generic` and are reported for review.
 
-Word export also goes through HTML. It uses a DOCX template if found:
+### 5.2 Header Detection
 
-1. explicit `template` option;
-2. first `.docx` in `templates/`;
-3. built-in `default_template.docx`.
+Current heuristic header detection is fragile. Target rule:
 
-When a template is used, body content is cleared but styles, page setup, headers, and the first template table are preserved. Header placeholders for department, document number, version, company, title, and dates are replaced.
+- Preserve parser-reported header row as evidence.
+- Use semantic classifier to validate header likelihood.
+- Return `HeaderAnalysis(is_header, confidence, evidence)`.
+- Do not drop or reinterpret rows without diagnostics.
 
-### Section Furniture
+Fallback:
 
-Word always inserts:
+- If confidence is low, keep parser header behavior and mark review.
 
-- a native TOC field at the beginning;
-- TOC instruction: `TOC \o "1-2" \h \z \u`;
-- `updateFields=true` so Word updates fields on open;
-- a page break after the TOC;
-- a revision section after TOC and before body;
-- a page break after the revision section.
+### 5.3 Column Layout
 
-If the Markdown has a revision table, it is normalized and rendered. If not, a default revision table is generated, with one row only when version or date exists. If a template has a revision table and Markdown has no revision table, the template table is reused.
+Target table layout is role-based:
 
-### Styles
+- classify columns into roles such as `address`, `bit_range`, `field_name`, `access`, `reset`, `description`, `symbol`, `example`, `type`, `default`.
+- roles define alignment, font role, wrap policy, min width, and flex priority.
+- actual widths are computed from page content box and measured or estimated text metrics.
 
-Custom paragraph styles are created if missing:
+Current hardcoded DXA widths are implementation details and must be removed from semantic rules.
 
-| Style | Rule |
-|---|---|
-| 正文2 | default body style, inherits Normal |
-| 正文3 | note/auxiliary text, first-line indent 0.74cm |
-| 短正文 | short single-sentence body, 3pt after, 1.15 line spacing |
-| 紧凑正文 | compact prose group, 2pt after, 1.1 line spacing |
-| 小标题 | bold paragraph subheading |
-| 规范 | Consolas 10.5pt, first-line indent 0.74cm |
-| 公式 | bold, centered |
+Fallback:
 
-Paragraph classification priority:
+- If metrics are unavailable, use configured approximate metrics for the active font profile.
+- If still overflowing, apply wrap policy; then compact font; then landscape section if profile allows; then report overflow risk.
 
-1. formula pattern;
-2. short single-`strong` paragraph -> `小标题`;
-3. technical naming pattern with angle placeholders and underscores -> `规范`;
-4. note prefixes `注意`, `注`, `例如`, `示例`, `参考`, `说明` under 120 chars -> `正文3`;
-5. paragraph classes from prose analyzer override to `短正文` / `紧凑正文`;
-6. default `正文2`.
+## 6. Image Rules
 
-Code blocks are not rendered as shaded blocks in Word. They are split into lines. If at least 40% of non-empty lines look like naming/spec grammar, all lines use `规范`; otherwise each line is classified as `规范` or `正文2`.
+Images are resolved through an asset resolver:
 
-Lists use manual prefixes rather than Word numbering:
+- local paths are relative to the source document directory;
+- data URIs are accepted;
+- remote images are fetched only when policy permits;
+- missing required images fail formal delivery;
+- missing optional images emit review diagnostics.
 
-- unordered levels cycle through `●`, `◆`, `■`, `▸`;
-- ordered lists use `1、`, `2、`;
-- task items use `☑` or `☐`;
-- left indent is `0.85cm + level * 0.65cm`;
-- first-line hanging indent is `-0.6cm`;
-- spacing before/after is 0.
+Block image layout:
 
-Word post-polish:
+- maximum width is the available content box;
+- aspect ratio is preserved;
+- captions are generated from alt/title only when profile enables captions.
 
-- removes heading `pageBreakBefore` from styles and paragraphs;
-- adds `keepNext` and `keepLines` to heading levels 1-3;
-- limits images to 15cm wide;
-- fills missing CJK/western run fonts;
-- cleans trailing empty paragraphs.
+Inline image layout:
 
-## 6. Image Rendering Rules
+- preserve in paragraph flow if renderer supports it;
+- otherwise substitute a structured placeholder and diagnostic.
 
-HTML image blocks render as:
+Unsupported current behavior:
 
-```html
-<figure class="image">
-  <img src="..." alt="...">
-  <figcaption>alt text</figcaption>
-</figure>
-```
+- robust SVG conversion for Word is not implemented.
+- mixed text/image paragraphs are not safely preserved in current code.
 
-Images are centered and constrained to `max-width: 100%; height: auto`. Figures avoid page breaks.
+## 7. Code Block Rules
 
-Word image rules:
+Default:
 
-- block images are centered;
-- data URI images are decoded to temp files;
-- local files are used if path exists;
-- HTTP(S) images are passed directly to python-docx after a best-effort size probe;
-- physical size is computed from image DPI with a fallback of 96 DPI;
-- initial maximum width is about 12cm (`12 * 360000` EMU);
-- post-polish maximum width is 15cm;
-- captions are centered as `图 {caption_text}`, 9pt gray;
-- missing images are represented as italic `[图片: ...]`, which postflight treats as critical placeholder residue.
+- code blocks remain code blocks in all renderers.
+- language info is preserved.
+- unknown language is allowed but preflight may warn.
 
-HTML exporter has `inline_images=True`; local images become data URIs. Remote and existing data URIs remain unchanged. Inline image resolution uses `_input_dir`, but the current code does not set `_renderer._input_dir` in the HTML exporter, so relative image inlining may fail unless the process cwd matches the image path. This is accidental.
+Grammar/spec blocks:
 
-SVG is not specially converted. HTML can reference or inline SVG as an image. Word relies on python-docx support and may fail or degrade to a placeholder.
+- may use a special style only if explicitly marked or classified with high confidence.
+- the current 40% spec-line threshold is not a formal rule; it is a legacy heuristic.
 
-## 7. Mermaid and Diagram Handling Rules
+Fallback:
 
-Diagram detection is content-based, not language-fence-based. Any code block containing these Mermaid markers is treated as a diagram: `graph`, `flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram`, `gantt`, `pie`, `journey`. PlantUML is detected by `@startuml` or `@startgantt`.
+- If Word code-block style is unavailable, use a monospace paragraph style while preserving block boundaries.
+- Do not convert code blocks to ordinary body paragraphs unless policy explicitly requests `flatten_code_blocks`.
 
-HTML export default mode is `browser` when `mermaid_render_mode=auto`. It outputs:
+## 8. Mermaid and Diagram Rules
 
-```html
-<pre class="mermaid">...</pre>
-```
+Diagram detection:
 
-and injects Mermaid CDN/init scripts.
+- prefer fenced language (`mermaid`, `plantuml`) when available;
+- content detection remains fallback.
 
-Word and PDF default to server rendering. The fallback chain is:
+HTML:
 
-1. Python Pillow renderer for Mermaid `graph`/`flowchart`;
-2. Python non-flowchart renderer for sequence/gantt/pie;
-3. Kroki API only if `use_kroki=True`;
-4. local `mmdc` for Mermaid or local `plantuml` for PlantUML;
-5. raw `<pre class="mermaid">` fallback.
+- Mermaid browser rendering is conformant for HTML output.
 
-Mermaid preflight fixes Chinese punctuation that commonly breaks parsing:
+Word/PDF:
 
-- `“”` -> `"`
-- `：` -> `:`
-- `；` -> `;` for sequence diagrams
-- `（）` -> `()`
+- diagrams must be prerendered to images for formal delivery.
+- raw Mermaid fallback in Word/PDF is `non_conformant` unless profile allows source-code diagrams.
 
-The built-in Python flowchart painter follows a G-C110-like black-and-white style, uses KaTi/HeiTi fallback fonts, white fill, black lines, minimum node size 120x50, padding 20, horizontal spacing 60, vertical spacing 50, and scales diagrams down to about 300px max height. It only understands a subset of Mermaid flowchart syntax.
+Fallback chain:
 
-## 8. AI Formatting Rules
+1. local deterministic renderer if supported for diagram subtype;
+2. configured remote renderer such as Kroki when network is allowed;
+3. local CLI such as `mmdc` or `plantuml`;
+4. diagnostic placeholder or non-conformant raw source, depending policy.
 
-No active LLM call exists in the implementation. “AI formatting” is currently deterministic heuristic formatting:
+## 9. Word Rendering Rules
 
-- table kind detection from headers/content;
-- explicit table marker override;
-- document type inference from headings and table kinds;
-- low-confidence table suggestion layer with a future provider interface;
-- compact prose grouping based on paragraph length and run length;
-- technical naming/spec pattern detection for Word `规范` style;
-- automatic TOC and revision section generation;
-- automatic landscape sections for genuinely wide register/bitfield/reference tables;
-- auto retry when postflight critical issues can be fixed from source;
-- output polishing of table widths, image size, fonts, spacing, and heading pagination.
+Word renderer responsibilities:
 
-Accidental/fragile parts:
+- consume normalized document model and render policy;
+- create native DOCX headings, paragraphs, lists, tables, images, footnotes, and sections;
+- map semantic styles to Word styles;
+- apply layout plan, not invent table layout after rendering.
 
-- the `suggester` module is heuristic only; comments mention AI as future extension;
-- some HTML polisher changes are counted but not written unless other modifications set `modified=True`;
-- table and paragraph heuristics are tuned for current regression cases, not formally proven.
+Profile defaults may map:
 
-## 9. Unsupported Features and Rendering Risks
+- `body` -> `正文2`
+- `note` -> `正文3`
+- `compact` -> `紧凑正文`
+- `grammar` -> `规范`
+- `code` -> planned `CodeBlock`
 
-Unsupported or unstable:
+TOC:
 
-- arbitrary raw HTML blocks except full `<table>` blocks and control comments;
-- nested complex Markdown inside table cells unless supplied as raw HTML table cell content;
-- true mathematical equation rendering in Word/PDF;
-- MathJax/KaTeX script injection for HTML math;
-- full Mermaid grammar in the Python renderer;
-- SVG-to-DOCX robust conversion;
-- multi-image paragraphs and mixed text-image paragraphs;
-- preserving rich formatting inside link text;
-- CommonMark edge cases around nested inline HTML;
-- native Word list numbering for regular lists;
-- updating Word TOC page numbers without opening/updating fields in Word;
-- robust responsive table wrappers in HTML due to current polisher write bug.
+- generated only when document profile enables it.
+- Word field-based TOC is allowed but must emit a “field update required” warning unless updated by automation.
 
-Operational risks:
+Revision history:
 
-- PDF output quality depends heavily on available backend.
-- ReportLab fallback is readable but not layout equivalent.
-- Remote images and Kroki require network.
-- mmdc/PlantUML require local CLI installation.
-- Word template headings may interact with generated numbering and field updates.
-- Default revision section appears even when the source had no revision section, which is intentional for formal company documents but may surprise lightweight documentation users.
+- generated only when profile requires or source provides it.
 
-## 10. Technical Debt Analysis
+Fallback:
 
-| Area | Risk | Intentional or Accidental |
-|---|---|---|
-| HTML as IR | Good architectural choice, but Word fidelity requires many post-HTML special cases | Intentional |
-| Dict AST | Lightweight but weakly typed and hard to validate | Technical debt |
-| Inline HTML parsing | Regex-based, fragile for nesting/attributes | Technical debt |
-| Image paragraph handling | Any paragraph with an image becomes only the first image | Accidental limitation |
-| HTML polisher write flag | Wide table wrappers may not persist | Bug |
-| HTML image inlining path | `_input_dir` not reliably set in renderer | Bug |
-| Word code block rendering | Loses visual code block container | Intentional for spec grammar documents, limiting for software docs |
-| Word list rendering | Manual bullets are stable visually but not semantically native | Intentional workaround |
-| PDF fallback chain | Robust delivery but inconsistent fidelity | Intentional |
-| TOC handling | Word TOC field requires user/application update | Known limitation |
-| Revision auto-generation | Formal-doc convention baked into all formats | Intentional domain assumption |
-| Table classifier thresholds | Hardcoded and domain-specific | Intentional but should be externalized |
-| Flowchart output dir | Server-rendered diagrams write into `output/flowchart_N.png` | Technical debt / side effect |
+- If a requested Word style is unavailable, create it or use a declared fallback style.
+- If native numbering is unavailable, manual list prefixes may be used with review diagnostic.
 
-## 11. Industry-Specific Document Conventions
+## 10. PDF Rendering Rules
 
-The renderer is optimized for formal Chinese technical documentation in automotive electronics, embedded systems, chip manuals, and software interface specifications:
+PDF renderer responsibilities:
 
-- G-C045-style formal document theme: black-and-white, Chinese office fonts, A4 margins, TOC, revision history.
-- G-C110-like flowchart rendering: simple black/white standardized shapes.
-- Revision履历 is treated as required document furniture.
-- Register/bitfield tables receive special compact/landscape layout.
-- BNF/interface/parameter/error-code tables receive code-column treatment.
-- Technical placeholders such as `<module>` are considered semantic content and preflight warns when they may be parsed as HTML.
-- Short single-sentence prose from converted office documents is compacted to avoid sparse Word/PDF output.
+- render from document model or canonical HTML plus render policy;
+- apply paged-media CSS or equivalent backend settings;
+- declare backend and fidelity.
 
-## 12. Hidden Assumptions and Implicit Constraints
+Backend fidelity:
 
-- A4 portrait with 2.5cm margins is the baseline page model.
-- Portrait content width is approximated as 9000 dxa; landscape as 13200 dxa.
-- Chinese/CJK documents are the primary target.
-- HTML output is self-contained in CSS, but Mermaid browser rendering uses CDN unless server mode is requested.
-- DOCX output is the most polished target; HTML/PDF share CSS but receive less post-processing.
-- Every formal document should have TOC and revision history.
-- Heading numbering is generated from source heading hierarchy, not from source numbering text.
-- h1-h3 are enough for HTML TOC; Word TOC is only h1-h2 by default.
-- Tables wider than six columns are risky, but landscape is only selected after width estimation.
-- Preflight may modify source files in place when auto-fix is used.
+- WeasyPrint: conformant target if available and render succeeds.
+- Chromium/Edge: conformant or review depending CSS feature use.
+- wkhtmltopdf: review due to modern CSS limitations.
+- LibreOffice: review due to HTML/CSS fidelity risk.
+- ReportLab text fallback: non-conformant for layout delivery; readable fallback only.
 
-## 13. Recommended Formal Specification
+Page size and margins:
 
-The companion `render-rules.yaml` in this repository encodes these implemented rules for future tests, documentation, and conformance checks.
+- derive from page profile.
+- A4/2.5cm is the default for `automotive_formal_spec`, not a universal rule.
+
+Fallback:
+
+- If PDF backend downgrades, emit sidecar metadata and quality gate status.
+
+## 11. Unsupported Syntax Rules
+
+Unsupported content must never disappear silently.
+
+Policy options:
+
+- `preserve_sanitized`: keep safe HTML in HTML output; text fallback in Word/PDF.
+- `text_fallback`: extract visible text and warn.
+- `reject`: fail preflight for formal delivery.
+
+Current unsupported or planned features:
+
+- arbitrary raw HTML block fidelity in Word/PDF: planned;
+- true OMML math in Word: planned;
+- MathJax/KaTeX HTML injection: planned;
+- full Mermaid grammar in native Python renderer: unsupported;
+- robust SVG-to-DOCX conversion: planned;
+- rich Markdown inside pipe table cells: unsupported unless represented as raw HTML table.
+
+## 12. Error Recovery Rules
+
+Preflight:
+
+- detects missing assets, empty links, wide tables, split tables, Mermaid punctuation, heading gaps, duplicate headings, excessive blank lines.
+- source mutation must be controlled by policy: `dry_run`, `patch`, or `in_place_with_backup`.
+
+Postflight:
+
+- checks placeholders, missing HTML images, raw Mermaid in Word/PDF, table overflow risk, PDF too small.
+
+Recovery:
+
+- retry only when the fix is deterministic and reversible.
+- renderer fallback must be recorded with fidelity.
+- final quality gate decides `pass`, `review`, or `fail`.
+
+## 13. Current Implementation Gaps
+
+The following are target-spec requirements not fully implemented:
+
+- typed normalized document model;
+- central asset resolver;
+- renderer-independent layout planner;
+- reason-code diagnostics for classifiers;
+- native Word code block preservation;
+- robust mixed inline image preservation;
+- configurable document profiles;
+- deriving page geometry instead of hardcoded DXA values.

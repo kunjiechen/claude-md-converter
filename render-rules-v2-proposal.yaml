@@ -1,0 +1,290 @@
+schema_version: "2.0-proposal"
+purpose: "renderer-independent rule architecture for technical document rendering"
+
+defaults:
+  document_profile: automotive_formal_spec
+  page_profile: a4_cn_formal
+  locale: zh-CN
+  unsupported_policy: warn_and_preserve_text
+
+page_profiles:
+  a4_cn_formal:
+    size: A4
+    margins:
+      top: 2.5cm
+      right: 2.5cm
+      bottom: 2.5cm
+      left: 2.5cm
+    derive_content_box: true
+    footer:
+      page_number:
+        position: bottom-center
+        first_page: false
+
+  web_responsive:
+    content_width: fluid
+    margins: responsive
+
+document_profiles:
+  automotive_formal_spec:
+    furniture:
+      toc:
+        enabled: true
+        levels_html: [1, 2, 3]
+        levels_docx: [1, 2]
+      revision_history:
+        enabled: true
+        required: true
+      cover:
+        enabled: false
+    numbering:
+      headings:
+        enabled: true
+        strip_source_numbering: true
+    font_profile: cn_formal
+    quality_gate: formal_delivery
+
+  lightweight_tech_note:
+    furniture:
+      toc:
+        enabled: auto
+        min_headings: 4
+      revision_history:
+        enabled: false
+    numbering:
+      headings:
+        enabled: false
+    font_profile: web_default
+    quality_gate: readable_delivery
+
+semantic_rules:
+  markdown:
+    parser: markdown-it-py
+    plugins:
+      - table
+      - strikethrough
+      - footnote
+      - texmath
+      - deflist
+    raw_html:
+      block_policy: preserve_sanitized
+      inline_policy: parse_known_preserve_unknown
+    extensions:
+      pagebreak_comment: "<!-- pagebreak -->"
+      table_kind_marker: "<!-- table: {kind} -->"
+      prose_policy_marker: "<!-- prose: {policy} -->"
+
+  paragraphs:
+    mixed_inline_images: preserve
+    compacting:
+      enabled: profile
+      classifiers:
+        - name: short_cjk
+          max_visual_chars: 42
+          locale: zh
+        - name: short_latin
+          max_visual_chars: 90
+          locale: latin
+      run_limits:
+        min: 2
+        max: 8
+      emit_reason_codes: true
+
+  code_blocks:
+    preserve_identity: true
+    grammar_detection:
+      enabled: true
+      require_explicit_marker_for_full_restyle: true
+      marker: "<!-- code: grammar -->"
+
+table_semantics:
+  explicit_override:
+    enabled: true
+    validation: warn_if_content_conflicts
+
+  classifiers:
+    register:
+      headers_any: [address, addr, offset, register, reg, bits, bit, field, access, reset, description]
+      content_patterns: [hex_address, bit_range, access_mode]
+      min_score: 0.75
+      roles:
+        offset: address
+        bits: bit_range
+        field: symbol
+        access: access
+        reset: reset
+        description: description
+
+    bitfield:
+      headers_any: [bits, bit, field, name, access, reset, description]
+      content_patterns: [bit_range, access_mode]
+      min_score: 0.75
+      roles:
+        bits: bit_range
+        name: symbol
+        access: access
+        reset: reset
+        description: description
+
+    bnf:
+      headers_any: [symbol, meaning, example, explanation]
+      min_score: 0.70
+      roles:
+        symbol: symbol
+        example: code_example
+        meaning: description
+        explanation: description
+
+    interface:
+      headers_any: [field, element_name, type, required, description, example]
+      min_score: 0.70
+
+    parameter:
+      headers_any: [name, parameter, type, range, default, description]
+      min_score: 0.70
+
+    error_code:
+      headers_any: [code, error, meaning, action, description]
+      min_score: 0.70
+
+  diagnostics:
+    attach_confidence: true
+    attach_reason_codes: true
+    low_confidence_action: review
+
+layout:
+  table_roles:
+    address:
+      font_role: code
+      align: center
+      min: 8mm
+      wrap: false
+    bit_range:
+      font_role: code
+      align: center
+      min: 10mm
+      wrap: false
+    access:
+      font_role: code
+      align: center
+      min: 8mm
+      wrap: false
+    reset:
+      font_role: code
+      align: center
+      min: 10mm
+      wrap: false
+    symbol:
+      font_role: code
+      align: center
+      min: 15mm
+      wrap: false
+    code_example:
+      font_role: code
+      align: left
+      min: 20mm
+      wrap: semantic
+    description:
+      font_role: body
+      align: left
+      min: 25mm
+      flex: 3
+      wrap: true
+
+  table_strategy:
+    compute_from_content: true
+    use_font_metrics: true
+    min_column_width: 6mm
+    allow_landscape:
+      when: overflow_risk
+      threshold_kind: content_box_ratio
+      ratio: 0.92
+    max_single_column_ratio: profile
+    emit_layout_plan: true
+
+assets:
+  resolver:
+    base_dir: source_document_dir
+    remote_policy: warn_and_fetch_if_enabled
+    missing_policy: diagnostic_placeholder
+  images:
+    max_width: content_box
+    preserve_aspect_ratio: true
+    caption:
+      source: alt_or_title
+      numbering: profile
+    svg_policy:
+      html: preserve
+      docx: convert_to_png_or_warn
+      pdf: backend_capability
+
+diagrams:
+  mermaid:
+    detection: fence_language_or_content
+    html:
+      mode: browser
+    paged_outputs:
+      mode: prerender
+      fallback_policy: fail_or_placeholder
+      allowed_fallbacks: [python_flowchart, kroki, mmdc]
+      fidelity_required_for_delivery: rendered_image
+  plantuml:
+    paged_outputs:
+      allowed_fallbacks: [plantuml_cli, kroki]
+
+renderer_adapters:
+  html:
+    classes_from_semantics: true
+    css_profile: cn_formal
+    overflow:
+      tables:
+        wrapper: true
+        scroll: horizontal
+
+  docx:
+    styles:
+      map:
+        body: 正文2
+        note: 正文3
+        compact: 紧凑正文
+        code: CodeBlock
+        grammar: 规范
+    lists:
+      preferred_mode: native_numbering
+      fallback: manual_prefix
+    tables:
+      mode: native_docx
+      apply_layout_plan: true
+
+  pdf:
+    preferred_backend: weasyprint
+    fallback_policy:
+      chromium: conformant
+      wkhtmltopdf: review
+      libreoffice: review
+      reportlab_text: non_conformant
+
+quality:
+  no_silent_content_loss: true
+  diagnostics_required_for:
+    - unsupported_raw_html
+    - missing_assets
+    - renderer_fallback
+    - classifier_low_confidence
+    - layout_overflow_risk
+  gates:
+    formal_delivery:
+      fail_on:
+        - content_loss
+        - missing_required_asset
+        - unrendered_diagram
+      review_on:
+        - low_confidence_table
+        - degraded_pdf_backend
+        - unupdated_toc
+    readable_delivery:
+      fail_on:
+        - content_loss
+      review_on:
+        - missing_optional_asset
+        - degraded_pdf_backend

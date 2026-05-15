@@ -69,7 +69,13 @@ class TableBuilder:
         if not all_rows:
             return
 
-        col_count = max(len(r) for r in all_rows)
+        # 计算真实列数（考虑 colspan）
+        max_cols = 0
+        for row_data in all_rows:
+            total = sum(c.get('colspan', 1) for c in row_data)
+            if total > max_cols:
+                max_cols = total
+        col_count = max_cols
         has_thead = tag.find('thead') is not None
         explicit_kind = tag.get('data-table-kind') or ''
         analysis = TableClassifier.classify([
@@ -88,8 +94,11 @@ class TableBuilder:
 
         self._set_borders(table, analysis.layout.widths)
 
-        # 填充数据
+        # 填充数据（支持 colspan / rowspan 合并）
         header_count = len(self._collect_header_rows(tag))
+        # rowspan_tracker[row][col] = True 表示该单元格被上一行的 rowspan 覆盖
+        rowspan_tracker = [[False] * col_count for _ in range(len(all_rows))]
+
         for row_idx, row_data in enumerate(all_rows):
             row = table.rows[row_idx]
             is_header_row = row_idx < header_count
@@ -98,10 +107,37 @@ class TableBuilder:
                 if row_idx < len(first_tag):
                     is_header_row = bool(first_tag[row_idx].find('th'))
 
-            for col_idx, cell_data in enumerate(row_data):
+            col_idx = 0
+            for cell_data in row_data:
+                # 跳过被 rowspan 占用的列
+                while col_idx < col_count and rowspan_tracker[row_idx][col_idx]:
+                    col_idx += 1
                 if col_idx >= col_count:
                     break
+
+                colspan = cell_data.get('colspan', 1)
+                rowspan = cell_data.get('rowspan', 1)
                 cell = row.cells[col_idx]
+
+                # 应用网格合并
+                if colspan > 1 or rowspan > 1:
+                    tcPr = self._exp._ensure_element(cell._tc, 'w:tcPr', first=True)
+                    if colspan > 1:
+                        gm = self._exp._ensure_element(tcPr, 'w:gridSpan')
+                        gm.set(qn('w:val'), str(colspan))
+                    if rowspan > 1:
+                        vm = self._exp._ensure_element(tcPr, 'w:vMerge')
+                        vm.set(qn('w:val'), 'restart')
+                        # 标记被 rowspan 覆盖的单元格
+                        for rr in range(row_idx + 1, row_idx + rowspan):
+                            if rr < len(all_rows):
+                                for cc in range(col_idx, col_idx + colspan):
+                                    if cc < col_count:
+                                        rowspan_tracker[rr][cc] = True
+                else:
+                    # 检查是否是被 rowspan 延续的单元格
+                    pass
+
                 self._format_cell(
                     cell,
                     cell_data,
@@ -110,6 +146,18 @@ class TableBuilder:
                     force_center=col_idx in analysis.layout.center_columns,
                     code_font=col_idx in analysis.layout.code_columns,
                 )
+                col_idx += colspan
+
+            # 为被 rowspan 覆盖但仍占位的列写入 vMerge continue
+            for cc in range(col_count):
+                if rowspan_tracker[row_idx][cc] and row_idx > 0 and rowspan_tracker[row_idx - 1][cc]:
+                    cell = row.cells[cc]
+                    tcPr = self._exp._ensure_element(cell._tc, 'w:tcPr', first=True)
+                    vm = self._exp._ensure_element(tcPr, 'w:vMerge')
+                    # 不设 val 表示 continue
+                    # 隐藏被合并单元格的内容
+                    for p in cell.paragraphs:
+                        p.clear()
 
         self._apply_layout(table, analysis.layout.widths, header_count if has_thead else 0)
 

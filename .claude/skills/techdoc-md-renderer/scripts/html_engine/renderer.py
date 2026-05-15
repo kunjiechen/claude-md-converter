@@ -10,6 +10,7 @@ import re
 
 from .inline_renderer import InlineRenderer
 from .context import RenderContext
+from analyzers.paragraph_classifier import ParagraphClassifier
 from analyzers.table_classifier import TableClassifier
 
 
@@ -45,9 +46,11 @@ class HtmlRenderer:
         self._heading_number_map: dict = {}
         self._build_heading_number_map(ast)
         self._heading_seq = 0
+        ParagraphClassifier.annotate(ast)
 
         # 第一遍：扫描识别TOC表和修订记录表
         toc_table_idx = -1
+        toc_para_range = None  # (start, end) for paragraph-based TOC
         revision_table_idx = -1
         for i, node in enumerate(ast):
             if node.get('type') == 'table':
@@ -55,30 +58,48 @@ class HtmlRenderer:
                     toc_table_idx = i
                 elif revision_table_idx < 0 and self._is_revision_table_node(node):
                     revision_table_idx = i
+        if toc_table_idx < 0:
+            toc_para_range = self._find_paragraph_toc_range(ast)
 
         # 第二遍：渲染节点
         body_parts = []
-        for i, node in enumerate(ast):
+        i = 0
+        while i < len(ast):
+            node = ast[i]
             if i == toc_table_idx:
+                i += 1
                 continue  # TOC由模板层处理
+            if toc_para_range and toc_para_range[0] <= i < toc_para_range[1]:
+                i += 1
+                continue  # 跳过源文件手动目录段落
             if i == revision_table_idx:
                 self._revision_html = self._render_revision_table(node)
                 # 跳过修订表前面的修订标题（避免与 _add_revision_section 重复）
                 if i > 0:
                     prev = ast[i - 1]
-                    if prev.get('type') == 'heading' and self._is_revision_heading(prev.get('content', '')):
-                        # 从 body_parts 中移除该标题
-                        heading_html = self._process_node(prev)
-                        if heading_html in body_parts:
-                            body_parts.remove(heading_html)
+                    is_heading = prev.get('type') == 'heading'
+                    is_para = prev.get('type') == 'paragraph'
+                    if (is_heading or is_para) and self._is_revision_heading(
+                        self._clean_heading_text(prev.get('content', ''))
+                    ):
+                        prev_html = self._process_node(prev)
+                        if prev_html in body_parts:
+                            body_parts.remove(prev_html)
+                i += 1
+                continue
+            group_html, next_idx = self._render_compact_paragraph_group(ast, i)
+            if group_html:
+                body_parts.append(group_html)
+                i = next_idx
                 continue
             html = self._process_node(node)
             if html:
                 body_parts.append(html)
+            i += 1
 
         context.body_html = "\n".join(body_parts)
         # 若md未显式提供目录表，则从标题自动生成
-        if toc_table_idx < 0 and not self._toc_html:
+        if toc_table_idx < 0 and toc_para_range is None and not self._toc_html:
             self._toc_html = self._generate_toc_from_headings(ast)
         context.toc_html = self._toc_html
         context.revision_html = self._revision_html
@@ -180,7 +201,41 @@ class HtmlRenderer:
         inner = self._inline.render(segments, content)
         if not inner.strip():
             return ""
-        return f'<p class="paragraph">{inner}</p>'
+        attrs = node.get('attributes', {})
+        prose_kind = attrs.get('prose_kind', 'body')
+        classes = f'paragraph paragraph--{self._escape_attr(prose_kind)}'
+        if attrs.get('prose_group') is not None:
+            classes += ' paragraph--grouped'
+        return f'<p class="{classes}" data-prose-kind="{self._escape_attr(prose_kind)}">{inner}</p>'
+
+    def _render_compact_paragraph_group(self, ast: List[Dict[str, Any]], start: int) -> tuple[str, int]:
+        node = ast[start]
+        if node.get('type') != 'paragraph':
+            return "", start
+        group = node.get('attributes', {}).get('prose_group')
+        if group is None:
+            return "", start
+
+        parts = []
+        i = start
+        while i < len(ast):
+            current = ast[i]
+            if current.get('type') != 'paragraph':
+                break
+            if current.get('attributes', {}).get('prose_group') != group:
+                break
+            rendered = self._render_paragraph(current)
+            if rendered:
+                parts.append(rendered)
+            i += 1
+        if len(parts) < 2:
+            return "", start
+        return (
+            f'<div class="prose-group prose-group--compact" data-prose-group="{self._escape_attr(str(group))}">\n'
+            + "\n".join(parts)
+            + "\n</div>",
+            i,
+        )
 
     # ---------- 列表 ----------
 
@@ -267,14 +322,22 @@ class HtmlRenderer:
             for j, cell_node in enumerate(cells):
                 if j >= cols:
                     break
+                attrs = cell_node.get('attributes', {})
                 align = self._get_cell_align(cell_node, col_types[j] if j < len(col_types) else 'general', is_header)
                 raw = cell_node.get('content', '') or ''
                 clean = self._clean_cell_text(raw)
                 segments = cell_node.get('children', [])
-                raw_html = cell_node.get('attributes', {}).get('raw_html', '')
+                raw_html = attrs.get('raw_html', '')
                 inner = raw_html if raw_html else self._inline.render(segments, clean)
                 classes = f"align-{align}"
-                cells_html.append(f'<{cell_tag} class="{classes}">{inner}</{cell_tag}>')
+                extra = ''
+                colspan = attrs.get('colspan', 1)
+                if colspan > 1:
+                    extra += f' colspan="{colspan}"'
+                rowspan = attrs.get('rowspan', 1)
+                if rowspan > 1:
+                    extra += f' rowspan="{rowspan}"'
+                cells_html.append(f'<{cell_tag} class="{classes}"{extra}>{inner}</{cell_tag}>')
             rows_html.append(f'<tr>{"".join(cells_html)}</tr>')
 
         return f'<table {table_attrs}>\n<thead>\n{rows_html[0]}\n</thead>\n<tbody>\n' + \
@@ -412,6 +475,41 @@ class HtmlRenderer:
             return '目录' in text
         return False
 
+    def _find_paragraph_toc_range(self, ast: List[Dict]) -> Optional[tuple]:
+        """检测段落形式的目录（非表格），返回 (start, end) 索引范围。
+
+        典型模式：「目录」段落后跟着一系列链接段落，每条含 [text](#anchor)。
+        跳过范围包含「目录」段落本身及其后续链接条目。
+        """
+        for i, node in enumerate(ast):
+            if node.get('type') != 'paragraph':
+                continue
+            content = (node.get('content', '') or '').strip()
+            if content != '目录':
+                continue
+            # 检查后续段落是否为链接条目
+            j = i + 1
+            link_count = 0
+            while j < len(ast):
+                next_node = ast[j]
+                if next_node.get('type') != 'paragraph':
+                    break
+                children = next_node.get('children', [])
+                if not children or all(
+                    c.get('type') in ('link', 'text') for c in children
+                ):
+                    has_link = any(c.get('type') == 'link' for c in children)
+                    nc = (next_node.get('content', '') or '').strip()
+                    # 典型的目录条目: [text](#anchor) 格式
+                    if has_link and '](#' in nc:
+                        link_count += 1
+                        j += 1
+                        continue
+                break
+            if link_count >= 3:
+                return (i, j)
+        return None
+
     def _generate_toc_from_headings(self, ast: List[Dict]) -> str:
         """从AST标题节点自动生成目录HTML（含章节编号，与Word一致）
 
@@ -489,7 +587,8 @@ class HtmlRenderer:
         tmpl_headers = ['版次', '修订人', '修订原因', '修订内容', '修订日期', '备注']
         col_count = 6
 
-        # 确定数据起始行
+        # 确定数据起始行（跳过复杂表头：可能有 2 行表头，含 rowspan/colspan）
+        # 原始 HTML 表头结构通常为：「版次/修订人/修订描述/修订日期/备注」+ 子行「修订原因/修订内容」
         data_start = 0
         if children:
             first_cells = children[0].get('children', [])
@@ -498,7 +597,11 @@ class HtmlRenderer:
                 data_start = 1
                 if len(children) > 1:
                     second_cells = children[1].get('children', [])
-                    if all(not (c.get('content', '') or '').strip() for c in second_cells):
+                    # 第二行为空或为子表头（修订原因/修订内容），则跳过
+                    second_texts = [(c.get('content', '') or '').strip() for c in second_cells]
+                    if all(not t for t in second_texts):
+                        data_start = 2
+                    elif any(t in ('修订原因', '修订内容', '修订描述') for t in second_texts):
                         data_start = 2
 
         header_row = '<tr>' + ''.join(f'<th class="align-center">{h}</th>' for h in tmpl_headers) + '</tr>'
@@ -514,7 +617,7 @@ class HtmlRenderer:
                 continue
             aligns = ['center', 'center', 'left', 'left', 'center', 'left']
             cells_html = ''.join(
-                f'<td class="align-{aligns[j]}">{self._escape(row_data[j])}</td>'
+                self._render_revision_cell(cells, j, row_data[j], aligns[j])
                 for j in range(col_count)
             )
             data_rows_html.append(f'<tr>{cells_html}</tr>')
@@ -523,6 +626,20 @@ class HtmlRenderer:
         table_html = f'<table class="table table--revision">\n<thead>\n{header_row}\n</thead>\n<tbody>\n' + \
                      "\n".join(data_rows_html) + '\n</tbody>\n</table>'
         return f'{title_html}\n{table_html}'
+
+    def _render_revision_cell(self, cells: list, j: int, content: str,
+                               align: str) -> str:
+        """渲染修订表单个单元格，保留原始 rowspan/colspan 属性"""
+        extra = ''
+        if j < len(cells):
+            attrs = cells[j].get('attributes', {})
+            colspan = attrs.get('colspan', 1)
+            rowspan = attrs.get('rowspan', 1)
+            if colspan > 1:
+                extra += f' colspan="{colspan}"'
+            if rowspan > 1:
+                extra += f' rowspan="{rowspan}"'
+        return f'<td class="align-{align}"{extra}>{self._escape(content)}</td>'
 
     # ---------- 代码块 & 流程图 ----------
 

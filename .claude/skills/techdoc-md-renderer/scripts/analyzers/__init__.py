@@ -7,6 +7,13 @@ from .table_classifier import (
     classify_table,
 )
 from .markdown_normalizer import NormalizeIssue, NormalizeReport, normalize_markdown_text
+from .paragraph_classifier import (
+    ParagraphAnalysis,
+    ParagraphClassifier,
+    ParagraphInfo,
+    ParagraphIssue,
+    ParagraphRun,
+)
 from .document_classifier import DocumentAnalysis, DocumentClassifier
 from .artifact_validator import ArtifactIssue, ArtifactValidationReport, ArtifactValidator
 from .visual_validator import VisualIssue, VisualValidationReport, VisualValidator
@@ -20,6 +27,11 @@ __all__ = [
     "NormalizeIssue",
     "NormalizeReport",
     "normalize_markdown_text",
+    "ParagraphAnalysis",
+    "ParagraphClassifier",
+    "ParagraphInfo",
+    "ParagraphIssue",
+    "ParagraphRun",
     "DocumentAnalysis",
     "DocumentClassifier",
     "ArtifactIssue",

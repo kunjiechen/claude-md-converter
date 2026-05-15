@@ -35,6 +35,38 @@ h4 { font-size: var(--font-size-h4); }
     margin: 0 0 var(--spacing-para) 0;
     text-indent: 0;
     text-align: justify;
+    text-justify: inter-ideograph;
+    orphans: 2;
+    widows: 2;
+}
+
+.paragraph--short,
+.paragraph--compact,
+.paragraph--note,
+.paragraph--clause,
+.prose-group--compact .paragraph {
+    text-align: start;
+}
+
+.paragraph--compact,
+.prose-group--compact .paragraph {
+    margin-bottom: 2pt;
+}
+
+.paragraph--note {
+    margin-bottom: 3pt;
+}
+
+.prose-group {
+    margin: 0 0 var(--spacing-para) 0;
+}
+
+.prose-group--compact {
+    page-break-inside: avoid;
+}
+
+.prose-group--compact .paragraph:last-child {
+    margin-bottom: 0;
 }
 
 /* 超链接 */

@@ -13,6 +13,7 @@ from preflight import PreflightChecker
 from postflight import PostflightChecker
 from .document_classifier import DocumentClassifier
 from .markdown_normalizer import NormalizeReport, normalize_markdown_text
+from .paragraph_classifier import ParagraphClassifier
 from .table_classifier import TableClassifier
 from .suggester import (
     SUGGESTION_CONFIDENCE_THRESHOLD,
@@ -33,6 +34,7 @@ def build_quality_report(input_path: str, output_path: Optional[str] = None) -> 
     normalized = normalize_markdown_text(text, norm_report)
     parser = MarkdownParser()
     ast = parser.parse(normalized)
+    paragraph_analysis = ParagraphClassifier.analyze(ast)
 
     table_reports: List[Dict[str, Any]] = []
     analyses = []
@@ -93,6 +95,7 @@ def build_quality_report(input_path: str, output_path: Optional[str] = None) -> 
             "issues": [asdict(i) for i in norm_report.issues],
         },
         "tables": table_reports,
+        "prose": paragraph_analysis.to_dict(),
         "preflight": {
             "errors": pre.errors,
             "warnings": pre.warnings,
@@ -133,6 +136,7 @@ def render_quality_report_html(report: Dict[str, Any]) -> str:
 
     doc = report.get("document", {})
     tables = report.get("tables", [])
+    prose = report.get("prose", {})
     pre = report.get("preflight", {})
     post = report.get("postflight") or {}
     artifact = report.get("artifact_validation") or {}
@@ -185,6 +189,17 @@ def render_quality_report_html(report: Dict[str, Any]) -> str:
     pre_issues = _issue_list(pre.get("issues", [])[:20])
     post_issues = _issue_list(post.get("issues", [])[:20])
     recs = "".join(f"<li>{_e(r)}</li>" for r in doc.get("recommendations", [])) or "<li>-</li>"
+    prose_issues = _issue_list(prose.get("issues", [])[:20])
+    prose_runs = "".join(
+        "<tr>"
+        f"<td>{r.get('group')}</td>"
+        f"<td>{r.get('start_index')}</td>"
+        f"<td>{r.get('count')}</td>"
+        f"<td>{r.get('total_length')}</td>"
+        f"<td>{_e(r.get('suggested_policy'))}</td>"
+        "</tr>"
+        for r in prose.get("runs", [])[:20]
+    )
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -216,6 +231,7 @@ code {{ background: #f1f3f4; padding: 1px 4px; border-radius: 4px; }}
 	  <div class="metric"><div class="label">Document Type</div><div class="value">{_e(doc.get('document_type'))}</div></div>
 	  <div class="metric"><div class="label">Confidence</div><div class="value">{doc.get('confidence')}</div></div>
 	  <div class="metric"><div class="label">Tables</div><div class="value">{len(tables)}</div></div>
+	  <div class="metric"><div class="label">Short Paragraphs</div><div class="value">{prose.get('short_count', 0)}</div></div>
 	  <div class="metric"><div class="label">Quality Gate</div><div class="value {_gate_class(gate.get('status'))}">{_e(gate.get('status', '-'))} / {gate.get('score', 0)}</div></div>
 	  <div class="metric"><div class="label">Review Level</div><div class="value">{_e(gate.get('review_level', '-'))}</div></div>
 	</div>
@@ -235,6 +251,14 @@ code {{ background: #f1f3f4; padding: 1px 4px; border-radius: 4px; }}
 <table>
 <thead><tr><th>#</th><th>Kind</th><th>Confidence</th><th>Size</th><th>Layout</th><th>Issues</th><th>Suggestions</th></tr></thead>
 <tbody>{''.join(rows)}</tbody>
+</table>
+
+<h2>Prose Layout</h2>
+<p>{prose.get('total', 0)} paragraphs / {prose.get('short_count', 0)} short / {prose.get('compact_run_count', 0)} compact runs / average length {prose.get('average_length', 0)}</p>
+{prose_issues}
+<table>
+<thead><tr><th>Group</th><th>Start Paragraph</th><th>Count</th><th>Total Length</th><th>Suggested Policy</th></tr></thead>
+<tbody>{prose_runs or '<tr><td colspan="5">-</td></tr>'}</tbody>
 </table>
 
 <h2>Preflight</h2>

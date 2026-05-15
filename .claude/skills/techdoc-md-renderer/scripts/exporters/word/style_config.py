@@ -27,6 +27,16 @@ STYLE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         'first_line_indent': Cm(0.74),
         'description': '辅助说明/补充注释，首行缩进',
     },
+    '短正文': {
+        'space_after': Pt(3),
+        'line_spacing': 1.15,
+        'description': '单句短段落，避免两端对齐和过大段后距',
+    },
+    '紧凑正文': {
+        'space_after': Pt(2),
+        'line_spacing': 1.1,
+        'description': '连续短段落组，压缩段间距',
+    },
     '小标题': {
         'bold': True,
         'description': '段落内加粗子标题',
@@ -82,6 +92,10 @@ def _create_paragraph_style(doc, style_name: str, props: dict):
         pf.alignment = props['alignment']
     if props.get('first_line_indent') is not None:
         pf.first_line_indent = props['first_line_indent']
+    if props.get('space_after') is not None:
+        pf.space_after = props['space_after']
+    if props.get('line_spacing') is not None:
+        pf.line_spacing = props['line_spacing']
 
 
 # ============================================================
@@ -203,6 +217,14 @@ def classify_paragraph(tag: Tag) -> str:
     4. 辅助说明（注意/注/例如 开头 + 短文本）
     5. 正文2（默认）
     """
+    classes = set(tag.get('class', []))
+    if 'paragraph--compact' in classes or 'paragraph--grouped' in classes:
+        return '紧凑正文'
+    if 'paragraph--short' in classes or 'paragraph--clause' in classes:
+        return '短正文'
+    if 'paragraph--note' in classes:
+        return '正文3'
+
     text = tag.get_text(strip=False)
 
     # 1. 公式模式 $$...$$

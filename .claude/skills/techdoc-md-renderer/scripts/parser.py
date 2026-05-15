@@ -172,6 +172,14 @@ class TokenConverter:
                 "children": [],
                 "attributes": {}
             }
+        m = re.search(r'<!--\s*(/)?\s*prose(?:\s*:\s*([a-zA-Z0-9_-]+))?\s*-->', content)
+        if m:
+            return {
+                "type": NODE_PROSE_MARKER,
+                "content": "end" if m.group(1) else (m.group(2) or "compact").strip().lower(),
+                "children": [],
+                "attributes": {"end": bool(m.group(1))}
+            }
         if '<table' in content.lower() and '</table>' in content.lower():
             return self._html_table_to_ast(content)
         return None
@@ -199,6 +207,8 @@ class TokenConverter:
                 style = cell.get('style', '')
                 if 'text-align:' in style:
                     align = style.split('text-align:', 1)[1].split(';', 1)[0].strip()
+                colspan = int(cell.get('colspan', 1))
+                rowspan = int(cell.get('rowspan', 1))
                 cells.append({
                     "type": NODE_TABLE_CELL,
                     "content": text,
@@ -206,6 +216,8 @@ class TokenConverter:
                     "attributes": {
                         "align": align,
                         "raw_html": inner_html,
+                        "colspan": colspan,
+                        "rowspan": rowspan,
                     }
                 })
             if cells:
@@ -869,6 +881,7 @@ NODE_TABLE = "table"
 NODE_TABLE_ROW = "table_row"
 NODE_TABLE_CELL = "table_cell"
 NODE_TABLE_MARKER = "table_marker"
+NODE_PROSE_MARKER = "prose_marker"
 NODE_CODE_BLOCK = "code_block"
 NODE_BLOCKQUOTE = "blockquote"
 NODE_IMAGE = "image"

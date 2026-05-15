@@ -40,6 +40,7 @@ def evaluate_quality_report(report: Dict[str, Any]) -> QualityGateResult:
     post = report.get("postflight") or {}
     artifact = report.get("artifact_validation") or {}
     tables = report.get("tables") or []
+    prose = report.get("prose") or {}
     norm = report.get("normalization") or {}
 
     pre_errors = int(pre.get("errors") or 0)
@@ -50,6 +51,8 @@ def evaluate_quality_report(report: Dict[str, Any]) -> QualityGateResult:
     artifact_warnings = int(artifact.get("warning_count") or 0)
     low_conf_tables = [t for t in tables if t.get("low_confidence")]
     table_issue_count = sum(len(t.get("issues") or []) for t in tables)
+    prose_issue_count = len(prose.get("issues") or [])
+    compact_runs = int(prose.get("compact_run_count") or 0)
     normalized_count = int(norm.get("modified") or 0)
 
     score = 100
@@ -61,6 +64,8 @@ def evaluate_quality_report(report: Dict[str, Any]) -> QualityGateResult:
     score -= artifact_warnings * 8
     score -= len(low_conf_tables) * 4
     score -= table_issue_count * 3
+    score -= prose_issue_count * 5
+    score -= min(compact_runs, 5)
     score -= min(normalized_count, 5) * 2
     has_blocking_issue = bool(pre_errors or post_critical or artifact_critical)
     if not has_blocking_issue:
@@ -75,6 +80,7 @@ def evaluate_quality_report(report: Dict[str, Any]) -> QualityGateResult:
         "output": [],
         "visual": [],
         "table": [],
+        "prose": [],
         "normalization": [],
         "confidence": [],
     }
@@ -107,6 +113,8 @@ def evaluate_quality_report(report: Dict[str, Any]) -> QualityGateResult:
         add_reason("confidence", f"low-confidence table classification: {indexes}", "为低置信度表格添加显式标记，例如 <!-- table: register -->。")
     if table_issue_count:
         add_reason("table", f"table layout has {table_issue_count} issue hint(s)", "重点复查宽表、长单元格、寄存器/位域等高密度表格。")
+    if prose_issue_count:
+        add_reason("prose", f"prose layout has {prose_issue_count} issue hint(s)", "重点复核连续短段落、单句段落和说明性短句组的排布效果。")
     if normalized_count:
         add_reason("normalization", f"normalized {normalized_count} split table fragment(s)", "建议回写规范 Markdown 表格，减少转换前自动修复依赖。")
 
@@ -166,9 +174,9 @@ def _classify_review_level(
         return "format_risk", "产物已生成，但存在较高格式风险，建议修复后再交付。"
     if format_categories and not visual_dependency_only:
         return "format_risk", "产物可阅读性存在格式风险，请重点复核页面、表格、图片和目录。"
-    if categories <= {"source", "normalization", "confidence", "visual"} and visual_dependency_only:
+    if categories <= {"source", "normalization", "confidence", "visual", "prose"} and visual_dependency_only:
         return "readable_needs_review", "产物大概率可阅读，但因环境缺少视觉渲染或源文件自动规范化，建议人工快速复核。"
-    if categories <= {"source", "normalization", "confidence"} and pre_warnings <= 10:
+    if categories <= {"source", "normalization", "confidence", "prose"} and pre_warnings <= 10:
         return "readable_needs_review", "产物可生成且大概率可阅读，建议针对源文件警告和低置信度表格做人工复核。"
     return "needs_review", "产物可生成，但建议人工复核后再交付。"
 

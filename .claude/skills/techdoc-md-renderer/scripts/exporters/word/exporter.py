@@ -323,6 +323,8 @@ class WordExporter:
                 self._add_list(element, doc, level=0)
             elif tag == 'table':
                 self._table_builder.build(element, doc)
+            elif tag == 'div' and 'prose-group' in element.get('class', []):
+                self._process_body_elements(element, doc)
             elif tag == 'div' and 'code-block' in element.get('class', []):
                 self._add_code_block(element, doc)
             elif tag == 'pre':

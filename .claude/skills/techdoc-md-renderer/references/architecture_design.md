@@ -57,6 +57,7 @@ scripts/
 │
 ├── analyzers/                       # 文档/表格识别与质量报告
 │   ├── markdown_normalizer.py       # Markdown 拆表合并等规范化
+│   ├── paragraph_classifier.py      # 正文短段落/紧凑段组识别
 │   ├── table_classifier.py          # 表格场景识别 + 布局策略
 │   ├── document_classifier.py       # 文档类型识别
 │   ├── artifact_validator.py        # 最终产物校验
@@ -168,11 +169,13 @@ TableAnalysis(kind, confidence, layout, issues)
 
 阶段 2: 语义分析
   AST 表格节点 / HTML table ──► TableClassifier ──► TableAnalysis
+  AST 顶层段落 ───────────────► ParagraphClassifier ──► prose_kind/prose_group
 
 阶段 3: HTML 渲染
   AST ──► HtmlRenderer ──► RenderContext（含 body/toc/revision/flowcharts）
                  │
                  └── 表格追加 table--{kind} / data-table-kind
+                 └── 段落追加 paragraph--{kind} / prose-group--compact
                  └── 标题清理手动编号后统一生成章节号，与 Word 标题规则对齐
 
 阶段 4: 导出
@@ -241,6 +244,30 @@ class RenderContext:
 | 参数表 | `table--parameter` | Name/Type/Range/Default/Description |
 | 错误码表 | `table--error_code` | Code/Error/Meaning/Action |
 | 参考表 | `table--reference` | 短代码列 + Long-Name/中文释义列 |
+
+段落会额外追加正文排版 class：
+
+| 段落场景 | CSS class | 识别依据 |
+|----------|-----------|----------|
+| 普通正文 | `paragraph--body` | 默认长正文段落 |
+| 单句短段 | `paragraph--short` | 短文本、单句或少量句子 |
+| 紧凑段组 | `paragraph--compact` + `prose-group--compact` | 连续短段落，适合压缩段间距 |
+| 说明备注 | `paragraph--note` | 注意/注/例如/说明/备注前缀 |
+| 条款短句 | `paragraph--clause` | 编号/字母条款开头的短句 |
+
+Markdown 中可使用显式标记覆盖自动紧凑策略：
+
+```markdown
+<!-- prose: compact -->
+第一句说明。
+
+第二句说明。
+<!-- /prose -->
+
+<!-- prose: preserve -->
+短句但保持普通正文节奏。
+<!-- /prose -->
+```
 
 Markdown 中可使用显式标记覆盖自动分类：
 

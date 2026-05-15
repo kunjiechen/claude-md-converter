@@ -97,7 +97,9 @@ Markdown ─► normalize/preflight ─► AST(parser.py) ─► HTML 引擎 ─
 | 项目 | 状态 | 说明 |
 |------|------|------|
 | 表格场景分类器 | ✅ | `scripts/analyzers/table_classifier.py`，规则识别 revision/glossary/interface/bnf/register/bitfield/parameter/error_code/reference/generic |
+| 正文段落分类器 | ✅ | `scripts/analyzers/paragraph_classifier.py`，识别短段落、连续紧凑段组、说明备注和条款短句 |
 | HTML table 场景标注 | ✅ | `HtmlRenderer._render_table()` 追加 `table--{kind}` 和 `data-table-kind` |
+| HTML prose 场景标注 | ✅ | `HtmlRenderer._render_paragraph()` 追加 `paragraph--{kind}`，连续短段落包裹 `prose-group--compact` |
 | Word 表格固定布局 | ✅ | `TableBuilder` 写入 `tblLayout=fixed`，同步 `tblGrid` 和 `tcW` |
 | Word 表格策略列宽 | ✅ | 根据 `TableAnalysis.layout.widths` 设置列宽 |
 | 表头跨页重复 | ✅ | thead 行写入 `w:tblHeader` |
@@ -114,6 +116,7 @@ Markdown ─► normalize/preflight ─► AST(parser.py) ─► HTML 引擎 ─
 | 超长单元格换行策略 | ✅ | 语法/接口字段长串自动插入显示换行，postflight 按最长连续片段判断风险 |
 | 文档类型识别 | ✅ | 识别 `standard_spec`、`chip_manual`、`register_doc`、`api_spec`、`coding_standard`、`generic_techdoc` |
 | 质量报告输出 | ✅ | `--quality-report` / API `quality_report=True` 生成 `.quality.json` 和 `.quality.html` |
+| 正文排版质量报告 | ✅ | 质量报告包含短段落数、紧凑段组、平均段落长度和正文排版风险 |
 | 质量门禁 | ✅ | 质量报告内置 `quality_gate`，输出 `pass/review/fail`、分数和交付建议 |
 | 单文件闭环管线 | ✅ | `--pipeline` 执行 preflight→convert→postflight→polish→final quality report |
 | 最终产物校验 | ✅ | `ArtifactValidator` 对 HTML/Word/PDF 做结构、内容、表格、图片、页数等校验 |
@@ -125,6 +128,7 @@ Markdown ─► normalize/preflight ─► AST(parser.py) ─► HTML 引擎 ─
 | 质量门禁阈值修正 | ✅ | 仅 warning/自动规范化不再判 fail，而进入 review |
 | Word 标题分页修正 | ✅ | 后处理不再给每个 H1 默认段前分页，改为清理强制分页并设置标题与下段同页 |
 | 回归样例库 | ✅ | `samples/regression/` 覆盖标准表格、寄存器/位域、接口/BNF、复杂单元格 |
+| 短段落回归样例 | ✅ | `short_paragraphs.md` 覆盖单句段落、显式 `prose: compact/preserve` 标记 |
 | DOCX/PDF 视觉页检 | ✅ | `VisualValidator` 检测 LibreOffice/Poppler，支持渲染页面并识别空白/内容稀疏页 |
 | Word exporter 拆分 | ✅ | 新增 `list_builder.py`、`image_builder.py`、`section_builder.py`，主导出器继续瘦身 |
 | Review 原因分类 | ✅ | `quality_gate.review_categories` 区分 blocking/source/output/visual/table/normalization/confidence，并输出 `review_level` |

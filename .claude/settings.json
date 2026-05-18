@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 test/scorer.py \"Original/G-C045 软件模块命名规范.docx\" \"test/G-C045 软件模块命名规范.docx\")"
+    ]
+  }
+}

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from batch_processor import BatchProcessor
+from api import Converter
 
 
 def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
@@ -131,27 +131,34 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
 
     parser.add_argument(
         '--pipeline',
+        choices=['v2'],
+        default='v2',
+        help='渲染管线: 仅支持 v2'
+    )
+
+    parser.add_argument(
+        '--profile',
+        choices=['automotive_formal_spec', 'chip_register_manual', 'lightweight_tech_note'],
+        help='V2 文档 profile'
+    )
+
+    parser.add_argument(
+        '--quality-gate',
+        choices=['pass', 'review', 'fail'],
+        default='review',
+        help='V2 发布选择所需质量门禁级别 (默认: review)'
+    )
+
+    parser.add_argument(
+        '--strict',
         action='store_true',
-        help='单文件转换时启用 preflight→convert→postflight→polish→quality gate 闭环'
+        help='V2 strict 模式：要求质量门禁通过'
     )
 
     parser.add_argument(
-        '--max-retries',
-        type=int,
-        default=2,
-        help='pipeline 模式下 postflight 严重问题的最大重试次数 (默认: 2)'
-    )
-
-    parser.add_argument(
-        '--regression',
+        '--report',
         action='store_true',
-        help='目录输入时执行 HTML/Word/PDF 回归转换并输出 regression_summary.json'
-    )
-
-    parser.add_argument(
-        '--regression-formats',
-        default='word,html,pdf',
-        help='回归模式输出格式，逗号分隔 (默认: word,html,pdf)'
+        help='V2/auto 模式输出 UnifiedRenderReport JSON'
     )
 
     return parser.parse_args(args)
@@ -195,6 +202,13 @@ def main(args: Optional[List[str]] = None):
     options['generate_index'] = not parsed_args.no_index
     options['index_title'] = parsed_args.index_title
     options['quality_report'] = parsed_args.quality_report
+    options['pipeline'] = 'v2'
+    if parsed_args.profile:
+        options['profile'] = parsed_args.profile
+        options['document_profile'] = parsed_args.profile
+    options['quality_gate'] = parsed_args.quality_gate
+    options['strict'] = parsed_args.strict
+    options['report'] = parsed_args.report
 
     # 判断是文件还是目录
     input_path = Path(parsed_args.input)
@@ -207,27 +221,7 @@ def main(args: Optional[List[str]] = None):
             'html': '.html',
             'pdf': '.pdf',
         }[parsed_args.format]
-        if parsed_args.pipeline:
-            from pipeline import ConversionPipeline
-            pipeline_options = dict(options)
-            pipeline_options.pop('format', None)
-            pipeline_output = None
-            if output_target and output_target.suffix.lower() == expected_suffix:
-                pipeline_output = output_target
-            elif parsed_args.output:
-                pipeline_options['output_dir'] = parsed_args.output
-            pipeline = ConversionPipeline(max_retries=parsed_args.max_retries)
-            result = pipeline.run(
-                input_path,
-                format=parsed_args.format,
-                output_path=pipeline_output,
-                **pipeline_options,
-            )
-            print(pipeline.format_result(result))
-            if not result.success:
-                sys.exit(1)
-        elif output_target and output_target.suffix.lower() == expected_suffix:
-            from api import Converter
+        if output_target and output_target.suffix.lower() == expected_suffix:
             converter = Converter()
             converter_options = dict(options)
             converter_options.pop('format', None)
@@ -241,6 +235,7 @@ def main(args: Optional[List[str]] = None):
                 print("转换成功")
                 print(f"输出文件: {result.output_path}")
                 _print_quality_gate(result.quality_status, result.quality_score, result.deliverable)
+                _print_unified_result(result)
                 if result.quality_report_path:
                     print(f"质量报告: {result.quality_report_path}")
                 if result.quality_report_html_path:
@@ -249,73 +244,56 @@ def main(args: Optional[List[str]] = None):
                 print(f"转换失败: {result.error or ''}", file=sys.stderr)
                 sys.exit(1)
         else:
+            converter = Converter()
+            converter_options = dict(options)
+            converter_options.pop('format', None)
+            out = None
             if parsed_args.output:
-                options['output_dir'] = parsed_args.output
-            processor = BatchProcessor(**options)
-            result = processor.process_files([str(input_path)], parsed_args.output)
-
-            if result['success'] > 0:
+                out_dir = Path(parsed_args.output)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out = out_dir / f"{input_path.stem}{expected_suffix}"
+            result = converter.convert_file(
+                input_path,
+                format=parsed_args.format,
+                output_path=out,
+                **converter_options,
+            )
+            if result.success:
                 print("转换成功")
-                for file_info in result.get('files', []):
-                    print(f"输出文件: {file_info['output']}")
-                    _print_quality_gate(
-                        file_info.get('quality_status'),
-                        file_info.get('quality_score'),
-                        file_info.get('deliverable'),
-                    )
-                    if file_info.get('quality_report'):
-                        print(f"质量报告: {file_info['quality_report']}")
-                    if file_info.get('quality_report_html'):
-                        print(f"可视化报告: {file_info['quality_report_html']}")
+                print(f"输出文件: {result.output_path}")
+                _print_quality_gate(result.quality_status, result.quality_score, result.deliverable)
+                _print_unified_result(result)
             else:
-                print("转换失败", file=sys.stderr)
+                print(f"转换失败: {result.error or ''}", file=sys.stderr)
                 sys.exit(1)
 
     elif input_path.is_dir():
         # 批量转换目录
-        if parsed_args.output:
-            options['output_dir'] = parsed_args.output
-        if parsed_args.regression:
-            from regression_runner import RegressionRunner
-            output_dir = parsed_args.output or str(input_path / 'regression_output')
-            formats = [f.strip() for f in parsed_args.regression_formats.split(',') if f.strip()]
-            runner = RegressionRunner(formats=formats, max_retries=parsed_args.max_retries)
-            regression_options = dict(options)
-            regression_options.pop('format', None)
-            regression_options.pop('output_dir', None)
-            report = runner.run(str(input_path), output_dir, **regression_options)
-            print("\n回归转换完成:")
-            print(f"  总计: {report.total}")
-            print(f"  通过: {report.passed}")
-            print(f"  复核: {report.review}")
-            print(f"  失败: {report.failed}")
-            print(f"  报告: {Path(output_dir) / 'regression_summary.json'}")
-            if report.failed > 0:
-                sys.exit(1)
-            return
-        processor = BatchProcessor(**options)
-        results = processor.process_directory(str(input_path))
-
+        converter = Converter()
+        converter_options = dict(options)
+        converter_options.pop('format', None)
+        results = converter.convert_directory(
+            str(input_path),
+            format=parsed_args.format,
+            output_dir=parsed_args.output,
+            generate_index=not parsed_args.no_index,
+            index_title=parsed_args.index_title,
+            max_workers=parsed_args.max_workers,
+            **converter_options,
+        )
         print(f"\n批量转换完成:")
-        print(f"  总计: {results['total']}")
-        print(f"  成功: {results['success']}")
-        print(f"  失败: {results['failed']}")
+        print(f"  总计: {results.total}")
+        print(f"  成功: {results.success}")
+        print(f"  失败: {results.failed}")
 
         # 显示失败文件
-        failed_files = [f for f in results['files'] if not f['success']]
+        failed_files = [f for f in results.files if not f.success]
         if failed_files:
             print(f"\n失败文件:")
             for file_info in failed_files:
-                print(f"  - {Path(file_info['input']).name}: {file_info['message']}")
+                print(f"  - {Path(file_info.input_path).name}: {file_info.error}")
 
-        # 显示日志摘要
-        log_summary = processor.get_log_summary()
-        if log_summary['error_count'] > 0:
-            print(f"\n日志统计:")
-            print(f"  错误: {log_summary['error_count']}")
-            print(f"  警告: {log_summary['warning_count']}")
-
-        if results['failed'] > 0:
+        if results.failed > 0:
             sys.exit(1)
 
     else:
@@ -333,6 +311,18 @@ def _print_quality_gate(status, score, deliverable):
     }.get(status, status)
     deliverable_text = '可交付' if deliverable else '不建议直接交付'
     print(f"质量门禁: {label} / {score} 分 / {deliverable_text}")
+
+
+def _print_unified_result(result):
+    if not getattr(result, 'pipeline', None):
+        return
+    print(f"渲染管线: {result.pipeline}")
+    if getattr(result, 'renderer_used', None):
+        print(f"Renderer: {result.renderer_used}")
+    if getattr(result, 'fidelity_level', None):
+        print(f"Fidelity: {result.fidelity_level}")
+    if getattr(result, 'unified_report_path', None):
+        print(f"Unified Report: {result.unified_report_path}")
 
 
 if __name__ == '__main__':

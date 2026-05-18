@@ -10,6 +10,7 @@ from mdit_py_plugins.footnote import footnote_plugin
 from mdit_py_plugins.texmath import texmath_plugin
 from mdit_py_plugins.deflist import deflist_plugin
 from analyzers.markdown_normalizer import normalize_markdown_text
+from diagnostics import make_diagnostic
 
 
 class MarkdownParser:
@@ -182,6 +183,24 @@ class TokenConverter:
             }
         if '<table' in content.lower() and '</table>' in content.lower():
             return self._html_table_to_ast(content)
+        if content.strip():
+            return {
+                "type": NODE_RAW_HTML,
+                "content": content,
+                "children": [],
+                "attributes": {
+                    "diagnostics": [
+                        make_diagnostic(
+                            "unsupported_raw_html_block",
+                            "Raw HTML block is preserved explicitly; non-HTML renderers may use text fallback.",
+                            severity="warning",
+                            category="unsupported",
+                            fallback="preserve_raw_html_or_text_fallback",
+                            evidence=[content[:120]],
+                        )
+                    ]
+                }
+            }
         return None
 
     def _html_table_to_ast(self, html: str) -> Optional[Dict[str, Any]]:
@@ -323,16 +342,18 @@ class TokenConverter:
         if self.pos + 1 < len(self.tokens):
             next_token = self.tokens[self.pos + 1]
             if next_token.type == "inline":
-                # 检查inline token中是否有图片
-                if next_token.children:
-                    has_image = any(child.type == "image" for child in next_token.children)
-                    if has_image:
-                        # 如果有图片，返回图片节点而不是段落
-                        self.pos += 1  # 跳过inline token
-                        self.pos += 1  # 跳过paragraph_close
-                        return self._handle_inline(next_token)[0]
                 # 解析内联格式段
                 segments = self._parse_inline_segments(next_token)
+                if len(segments) == 1 and segments[0].get("type") == NODE_IMAGE:
+                    self.pos += 1  # 跳过inline token
+                    self.pos += 1  # 跳过paragraph_close
+                    image = segments[0]
+                    return {
+                        "type": NODE_IMAGE,
+                        "content": image.get("content", ""),
+                        "children": [],
+                        "attributes": image.get("attributes", {})
+                    }
                 # 如果只有纯文本，保持content兼容
                 if len(segments) == 1 and segments[0].get("type") == "text" and not segments[0].get("bold") and not segments[0].get("italic") and not segments[0].get("strikethrough"):
                     content = segments[0].get("content", "")
@@ -885,6 +906,7 @@ NODE_PROSE_MARKER = "prose_marker"
 NODE_CODE_BLOCK = "code_block"
 NODE_BLOCKQUOTE = "blockquote"
 NODE_IMAGE = "image"
+NODE_RAW_HTML = "raw_html"
 NODE_LINK = "link"
 NODE_STRONG = "strong"
 NODE_EM = "em"

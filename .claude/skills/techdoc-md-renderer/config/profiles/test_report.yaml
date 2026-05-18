@@ -1,0 +1,11 @@
+profile: test_report
+extends: lightweight_tech_note
+profile_version: "1.0"
+description: Engineering test report profile.
+document_policy:
+  toc: optional
+  revision_history: optional
+table_policy:
+  supported_table_kinds: [parameter, error_code, reference, generic]
+quality_policy:
+  review_on: [missing_asset, wide_table_overflow, unsupported_raw_html]

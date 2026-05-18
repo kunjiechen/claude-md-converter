@@ -141,6 +141,8 @@ class HtmlRenderer:
             return self._render_definition_list(node)
         elif node_type == 'pagebreak':
             return '<hr class="pagebreak">'
+        elif node_type == 'raw_html':
+            return self._render_raw_html(node)
         return ""
 
     # ---------- 标题 ----------
@@ -790,6 +792,13 @@ class HtmlRenderer:
         if not parts:
             return ""
         return '<dl class="definition-list">\n' + "\n".join(parts) + '\n</dl>'
+
+    def _render_raw_html(self, node: Dict[str, Any]) -> str:
+        """Preserve raw HTML blocks explicitly instead of silently dropping them."""
+        content = node.get('content', '') or ''
+        if not content.strip():
+            return ""
+        return content
 
     # ---------- 辅助 ----------
 

@@ -1,0 +1,12 @@
+profile: api_reference
+extends: lightweight_tech_note
+profile_version: "1.0"
+description: API reference profile for generated or hand-written interface docs.
+document_policy:
+  toc: optional
+  heading_numbering: optional
+table_policy:
+  supported_table_kinds: [interface, parameter, error_code, reference, generic]
+code_policy:
+  preserve_code_identity: true
+  grammar_detection_policy: fence_language_then_content_hint

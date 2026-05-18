@@ -46,8 +46,9 @@ class InlineRenderer:
             return self._escape(text)
 
         elif seg_type == "image":
-            src = seg.get("src", "")
-            alt = seg.get("alt", "")
+            attrs = seg.get("attributes", {}) or {}
+            src = seg.get("src", "") or attrs.get("src", "")
+            alt = seg.get("alt", "") or attrs.get("alt", "")
             return f'<img src="{self._escape_attr(src)}" alt="{self._escape_attr(alt)}" class="inline-image">'
 
         elif seg_type == "footnote_ref":

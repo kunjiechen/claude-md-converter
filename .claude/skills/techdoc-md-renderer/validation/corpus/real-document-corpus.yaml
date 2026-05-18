@@ -1,0 +1,40 @@
+version: 1
+description: Real document validation corpus for fidelity and rollout evidence.
+documents:
+  - case_id: g-c110-flowchart-spec-a0
+    path: /Users/chenkunjie/Downloads/SBPAI/Proj/规范文档/G-C110 流程图编制规范_A0/out/G-C110 流程图编制规范_A0.md
+    profile: requirement_spec
+    category: mixed_chinese_formal_spec
+    language: zh-CN
+    expected_features:
+      - toc
+      - revision_table
+      - html_table
+      - images
+      - numbered_headings
+      - mixed_chinese_english
+    validation_status: active
+  - case_id: chip-manual-seed
+    path: TODO/real-corpus/chip_manual.md
+    profile: chip_manual
+    category: chip_manual
+    expected_features: [register_table, bitfield_table]
+    validation_status: planned
+  - case_id: autosar-spec-seed
+    path: TODO/real-corpus/autosar_spec.md
+    profile: autosar_spec
+    category: autosar_spec
+    expected_features: [toc, interface_table]
+    validation_status: planned
+  - case_id: api-reference-seed
+    path: TODO/real-corpus/api_reference.md
+    profile: api_reference
+    category: api_reference
+    expected_features: [code_block, parameter_table]
+    validation_status: planned
+  - case_id: test-report-seed
+    path: TODO/real-corpus/test_report.md
+    profile: test_report
+    category: test_report
+    expected_features: [result_table, images]
+    validation_status: planned

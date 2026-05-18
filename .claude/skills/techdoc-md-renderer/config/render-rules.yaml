@@ -1,0 +1,249 @@
+version: 2
+
+schema_versions:
+  spec_version: "2.0"
+  render_rules_schema: "2.0"
+  profile_schema: "1.0"
+  adapter_capability_schema: "1.0"
+
+defaults:
+  document_profile: lightweight_tech_note
+  page_profile: a4_cn_formal
+
+feature_flags:
+  use_legacy_renderer: true
+  enable_html_adapter: false
+  enable_docx_adapter: false
+  enable_pdf_adapter: false
+  unified_pipeline_rollout:
+    enabled: false
+    release_mode: v2_default_with_fallback
+    automatic_fallback: true
+    canary_percent: 0
+    quality_gate_required: review
+    rollout_matrix:
+      lightweight_tech_note:
+        html: v2
+        docx: v2
+        pdf: legacy_review
+        default: partial
+      chip_register_manual:
+        html: v2
+        docx: review
+        pdf: legacy
+        default: partial
+      automotive_formal_spec:
+        html: review
+        docx: legacy
+        pdf: legacy
+        default: legacy
+    renderer_defaults:
+      html:
+        adapter_default: true
+      docx:
+        adapter_default: false
+      pdf:
+        adapter_default: false
+    profiles:
+      automotive_formal_spec:
+        adapter_default: false
+      chip_register_manual:
+        adapter_default: false
+      lightweight_tech_note:
+        adapter_default: true
+  pdf_adapter_rollout:
+    automatic_fallback: true
+    preferred_backend: weasyprint
+    fallback_backends: [chromium, wkhtmltopdf, reportlab]
+    profiles:
+      automotive_formal_spec:
+        adapter_enabled: false
+      chip_register_manual:
+        adapter_enabled: false
+      lightweight_tech_note:
+        adapter_enabled: true
+  docx_adapter_rollout:
+    automatic_fallback: true
+    adapter_confidence_threshold: 0.80
+    profiles:
+      automotive_formal_spec:
+        adapter_enabled: false
+        confidence_threshold: 0.95
+      chip_register_manual:
+        adapter_enabled: false
+        confidence_threshold: 0.85
+      lightweight_tech_note:
+        adapter_enabled: true
+        confidence_threshold: 0.70
+
+page_profiles:
+  a4_cn_formal:
+    description: A4 Chinese formal technical document. Physical units are names only here; renderer adapters convert them.
+    page_size: A4
+    writing_system: zh-CN
+    margins: formal
+    content_width_policy: page_profile_derived
+  web_responsive:
+    description: Responsive HTML/web preview profile.
+    page_size: responsive
+    writing_system: mixed
+    margins: viewport_adaptive
+    content_width_policy: container_derived
+
+profiles:
+  automotive_formal_spec:
+    description: Formal automotive electronics specification.
+    page_profile: a4_cn_formal
+    document_policy:
+      toc: required
+      revision_history: required
+      heading_numbering: required
+      source_number_stripping: preserve_source
+      unsupported_content_policy: diagnostic_required
+      header_footer:
+        header_title: document_title
+        footer_page_number: true
+    typography_policy:
+      font_profile: zh_cn_formal
+      body_style: formal_body
+      code_style: mono_compact
+      note_style: admonition_formal
+    table_policy:
+      supported_table_kinds: [revision, interface, parameter, error_code, glossary, reference, generic]
+      landscape_allowed: true
+      fallback_policy: generic_table_review
+    image_policy:
+      inline_image_policy: preserve_inline
+      svg_policy: prerender_for_paginated_targets
+      missing_asset_policy: diagnostic_error
+    diagram_policy:
+      mermaid_policy: prerender_for_paginated_targets
+      plantuml_policy: prerender_for_paginated_targets
+      prerender_required_targets: [docx, pdf]
+      fallback_fidelity: review
+    quality_policy:
+      fail_on: [silent_content_loss, missing_required_asset]
+      review_on: [low_confidence_semantic, unsupported_raw_html, source_only_diagram]
+
+  chip_register_manual:
+    description: Chip manual with register and bitfield tables.
+    page_profile: a4_cn_formal
+    document_policy:
+      toc: required
+      revision_history: recommended
+      heading_numbering: required
+      source_number_stripping: preserve_source
+      unsupported_content_policy: diagnostic_required
+      header_footer:
+        header_title: document_title
+        footer_page_number: true
+    table_policy:
+      supported_table_kinds: [register, bitfield, revision, reference, parameter, generic]
+      landscape_allowed: true
+      fallback_policy: generic_table_review
+      overflow_pipeline: [classify, assign_column_roles, prefer_landscape_when_policy_allows, scale_font_with_review, wrap_cells, declare_review]
+    diagram_policy:
+      mermaid_policy: prerender_for_paginated_targets
+      plantuml_policy: prerender_for_paginated_targets
+      prerender_required_targets: [docx, pdf]
+      fallback_fidelity: review
+    quality_policy:
+      fail_on: [silent_content_loss, missing_required_asset]
+      review_on: [low_confidence_table, source_only_diagram, wide_table_overflow]
+
+  lightweight_tech_note:
+    description: Short technical note or lightweight engineering memo.
+    page_profile: web_responsive
+    document_policy:
+      toc: optional
+      revision_history: optional
+      heading_numbering: optional
+      source_number_stripping: preserve_source
+      unsupported_content_policy: diagnostic_required
+      header_footer:
+        header_title: none
+        footer_page_number: false
+    table_policy:
+      supported_table_kinds: [interface, parameter, error_code, glossary, reference, generic]
+      landscape_allowed: false
+      fallback_policy: generic_table_review
+    quality_policy:
+      fail_on: [silent_content_loss]
+      review_on: [unsupported_raw_html, missing_asset, source_only_diagram]
+
+typography_policy:
+  font_profile: zh_cn_technical
+  body_style: technical_body
+  code_style: mono_compact
+  note_style: admonition_standard
+
+table_policy:
+  supported_table_kinds: [revision, register, bitfield, bnf, interface, parameter, error_code, glossary, reference, generic]
+  table_classifier_thresholds:
+    # Downgrade table semantic classification to generic below this confidence.
+    low_confidence: 0.70
+    # Treat parser header as reliable only at or above this confidence.
+    header_reliable: 0.75
+  column_roles:
+    register:
+      code_columns: [address, register, bits, access, reset]
+      description_columns: [description]
+    bitfield:
+      code_columns: [bits, field, access, reset]
+      description_columns: [description]
+    interface:
+      code_columns: [structure, example]
+      description_columns: [description]
+  overflow_pipeline: [classify, assign_column_roles, wrap_cells, declare_review]
+  landscape_allowed: false
+  fallback_policy: generic_table_review
+
+image_policy:
+  asset_base_dir: source_document_dir
+  max_width_policy: fit_available_content_width
+  inline_image_policy: preserve_inline
+  svg_policy: preserve_for_html_prerender_for_paginated_targets
+  missing_asset_policy: diagnostic_error
+
+diagram_policy:
+  mermaid_policy: preserve_source_and_prerender_when_target_requires_static_assets
+  plantuml_policy: preserve_source_and_prerender_when_target_requires_static_assets
+  prerender_required_targets: [docx, pdf]
+  fallback_fidelity: review
+
+code_policy:
+  preserve_code_identity: true
+  grammar_detection_policy: fence_language_then_content_hint
+  flatten_code_blocks: false
+
+renderer_policy:
+  html:
+    target_fidelity: conformant
+    style_adapter: css_theme
+  docx:
+    target_fidelity: review
+    adapter_policy:
+      # Adapter unit conversion boundary: values are consumed only by DOCX adapter,
+      # while core LayoutPlan remains renderer-independent.
+      content_width_inches: 6.5
+      max_image_width_inches: 5.8
+      repeat_table_header: true
+      word_style_mapping:
+        heading: adapter_defined
+        table: Table Grid
+        code: adapter_defined
+  pdf:
+    target_fidelity: review
+    adapter_policy:
+      preferred_backend: weasyprint
+      fallback_backends: [chromium, wkhtmltopdf, reportlab]
+    backend_fidelity_rules:
+      browser_print: conformant_for_html_css
+      libreoffice_docx_export: review
+      unavailable_backend: non_conformant
+
+quality_policy:
+  diagnostics_required_for: [unsupported_content, missing_asset, low_confidence_semantic, source_only_diagram]
+  fail_on: [silent_content_loss]
+  review_on: [unsupported_raw_html, low_confidence_table, missing_asset, source_only_diagram]
+  fidelity_levels: [conformant, review, degraded, non_conformant]

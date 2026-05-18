@@ -1,0 +1,8 @@
+profile: autosar_spec
+extends: automotive_formal_spec
+profile_version: "1.0"
+description: AUTOSAR-style formal software specification.
+table_policy:
+  supported_table_kinds: [interface, parameter, error_code, reference, glossary, generic]
+quality_policy:
+  review_on: [low_confidence_semantic, unsupported_raw_html, source_only_diagram, missing_revision_history]

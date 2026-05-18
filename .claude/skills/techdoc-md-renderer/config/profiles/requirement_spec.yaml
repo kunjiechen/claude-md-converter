@@ -1,0 +1,10 @@
+profile: requirement_spec
+extends: automotive_formal_spec
+profile_version: "1.0"
+description: Formal requirements specification profile.
+document_policy:
+  toc: required
+  revision_history: required
+  heading_numbering: required
+table_policy:
+  supported_table_kinds: [revision, interface, parameter, reference, glossary, generic]

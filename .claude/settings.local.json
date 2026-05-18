@@ -10,7 +10,9 @@
       "Read(//Users/chenkunjie/**)",
       "Skill(techdoc-md-renderer)",
       "Bash(cd /Users/chenkunjie/Downloads/SBPAI/Proj/techdoc-md-renderer/.claude/skills/techdoc-md-renderer && python3 *)",
-      "Bash(python3 -c *sys.path.insert(0, '.claude/skills/techdoc-md-renderer/scripts')*)"
+      "Bash(python3 -c *sys.path.insert(0, '.claude/skills/techdoc-md-renderer/scripts')*)",
+      "Bash(python -m pytest tests/ -v --tb=short -q)",
+      "Bash(python3 -c ' *)"
     ],
     "additionalDirectories": [
       "/Users/chenkunjie/Downloads/SBPAI/Proj/claude-md-converter/.claude"

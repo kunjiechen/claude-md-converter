@@ -1,0 +1,9 @@
+profile: chip_manual
+extends: chip_register_manual
+profile_version: "1.0"
+description: Externalized chip manual profile alias for maintenance-mode profile extension.
+document_policy:
+  toc: required
+  revision_history: recommended
+table_policy:
+  supported_table_kinds: [register, bitfield, revision, reference, parameter, generic]

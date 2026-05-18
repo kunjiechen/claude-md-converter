@@ -1,0 +1,20 @@
+{
+  "automotive_formal_spec": {
+    "min_tables": 1,
+    "min_headings": 2,
+    "requires_toc": true,
+    "requires_revision": true
+  },
+  "chip_register_manual": {
+    "min_tables": 2,
+    "min_headings": 2,
+    "requires_toc": true,
+    "requires_revision": false
+  },
+  "lightweight_tech_note": {
+    "min_tables": 1,
+    "min_headings": 1,
+    "requires_toc": false,
+    "requires_revision": false
+  }
+}
